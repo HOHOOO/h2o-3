@@ -18,19 +18,18 @@ import java.util.UUID;
  *  single Java byte array in a single JVM heap, and only an int's worth of
  *  elements.  Chunks support both the notions of a global row-number and a
  *  chunk-local numbering.  The global row-number calls are variants of {@code
- *  at} and {@code set}.  If the row is outside the current Chunk's range, the
- *  data will be loaded by fetching from the correct Chunk.  This probably
- *  involves some network traffic, and if all rows are loaded then the entire
- *  dataset will be pulled local (possibly triggering an OutOfMemory).
+ *  at_abs} and {@code set_abs}.  If the row is outside the current Chunk's
+ *  range, the data will be loaded by fetching from the correct Chunk.  This
+ *  probably involves some network traffic, and if all rows are loaded then the
+ *  entire dataset will be pulled locally (possibly triggering an OutOfMemory).
  *
  *  <p>The chunk-local numbering supports the common {@code for} loop iterator
- *  pattern, using {@code at} and {@code set} calls that end in a '{@code 0}',
- *  and is faster than the global row-numbering for tight loops (because it
- *  avoids some range checks):
- *  <pre>
- *  for( int row=0; row &lt; chunk._len; row++ )
+ *  pattern, using {@code at*} and {@code set} calls, and is faster than the
+ *  global row-numbering for tight loops (because it skips some range checks):
+ *  <pre>{@code
+ *  for (int row = 0; row < chunk._len; row++)
  *    ...chunk.atd(row)...
- *  </pre>
+ *  }</pre>
  *
  *  <p>The array-like API allows loading and storing elements in and out of
  *  Chunks.  When loading, values are decompressed.  When storing, an attempt
@@ -48,8 +47,8 @@ import java.util.UUID;
  *  #close} is made; again this is handled by MRTask directly.
  *
  *  <p>In addition to normal load and store operations, Chunks support the
- *  notion a missing element via the {@code isNA_abs()} calls, and a "next
- *  non-zero" notion for rapidly iterating over sparse data.
+ *  notion a missing element via the {@link #isNA} call, and a "next non-zero"
+ *  notion for rapidly iterating over sparse data.
  *
  *  <p><b>Data Types</b>
  *
@@ -69,12 +68,13 @@ import java.util.UUID;
  *  coding error and will be flagged.  If you are working with integer data
  *  with missing elements, you must first check for a missing value before
  *  loading it:
- *  <pre>
+ *  <pre>{@code
  *  if( !chk.isNA(row) ) ...chk.at8(row)....
- *  </pre>
+ *  }</pre>
  *
  *  <p>The same holds true for the other non-real types (timestamps, UUIDs,
- *  Strings, or categoricals); they must be checked for missing before being used.
+ *  Strings, or categoricals): they must be checked for missing before being
+ *  used.
  *
  *  <p><b>Performance Concerns</b>
  *
@@ -97,79 +97,28 @@ import java.util.UUID;
  *  Note that due "NaN poisoning" if any row element is missing, the entire
  *  distance calculated will be NaN.
  *  <pre>{@code
-final double[] _point;                             // The given point
-public void map( Chunk[] chks ) {                  // Map over a set of same-numbered Chunks
-  for( int row=0; row < chks[0]._len; row++ ) {    // For all rows
-    double dist=0;                                 // Squared distance
-    for( int col=0; col < chks.length-1; col++ ) { // For all cols, except the last output col
-      double d = chks[col].atd(row) - _point[col]; // Distance along this dimension
-      dist += d*d;                                 // Sum-squared-distance
-    }
-    chks[chks.length-1].set( row, dist );          // Store back the distance in the last col
-  }
-}}</pre>
+ *  final double[] _point;                             // The given point
+ *  public void map( Chunk[] chks ) {                  // Map over a set of same-numbered Chunks
+ *   for( int row=0; row < chks[0]._len; row++ ) {    // For all rows
+ *     double dist=0;                                 // Squared distance
+ *     for( int col=0; col < chks.length-1; col++ ) { // For all cols, except the last output col
+ *       double d = chks[col].atd(row) - _point[col]; // Distance along this dimension
+ *       dist += d*d;                                 // Sum-squared-distance
+ *     }
+ *     chks[chks.length-1].set( row, dist );          // Store back the distance in the last col
+ *   }
+ *  }}</pre>
  */
 
-public abstract class Chunk extends Iced<Chunk> {
+public abstract class Chunk extends Iced<Chunk> implements Vec.Holder {
 
   public Chunk() {}
   private Chunk(byte [] bytes) {_mem = bytes;initFromBytes();}
 
-  /**
-   * Sparse bulk interface, stream through the compressed values and extract them into dense double array.
-   * @param vals holds extracted values, length must be >= this.sparseLen()
-   * @param vals holds extracted chunk-relative row ids, length must be >= this.sparseLen()
-   * @return number of extracted (non-zero) elements, equal to sparseLen()
-   */
-  public int asSparseDoubles(double[] vals, int[] ids){return asSparseDoubles(vals,ids,Double.NaN);}
-  public int asSparseDoubles(double [] vals, int [] ids, double NA) {
-    if(vals.length < sparseLenZero())
-      throw new IllegalArgumentException();
-    getDoubles(vals,0,_len);
-    for(int i = 0; i < _len; ++i) ids[i] = i;
-    return len();
-  }
-
-  /**
-   * Dense bulk interface, fetch values from the given range
-   * @param vals
-   * @param from
-   * @param to
-   */
-  public double [] getDoubles(double[] vals, int from, int to){ return getDoubles(vals,from,to, Double.NaN);}
-  public double [] getDoubles(double [] vals, int from, int to, double NA){
-    for(int i = from; i < to; ++i) {
-      vals[i - from] = atd(i);
-      if(Double.isNaN(vals[i-from]))
-        vals[i - from] = NA;
-    }
-    return vals;
-  }
-
-  public int [] getIntegers(int [] vals, int from, int to, int NA){
-    for(int i = from; i < to; ++i) {
-      double d = atd(i);
-      if(Double.isNaN(d))
-        vals[i] = NA;
-      else {
-        vals[i] = (int)d;
-        if(vals[i] != d) throw new IllegalArgumentException("Calling getIntegers on non-integer column");
-      }
-    }
-    return vals;
-  }
 
 
-  /**
-   * Dense bulk interface, fetch values from the given ids
-   * @param vals
-   * @param ids
-   */
-  public double[] getDoubles(double [] vals, int [] ids){
-    int j = 0;
-    for(int i:ids) vals[j++] = atd(i);
-    return vals;
-  }
+
+
   /** Global starting row for this local Chunk; a read-only field. */
   transient long _start = -1;
   /** Global starting row for this local Chunk */
@@ -177,7 +126,7 @@ public abstract class Chunk extends Iced<Chunk> {
   /** Global index of this chunk filled during chunk load */
   transient int _cidx = -1;
 
-  /** Number of rows in this Chunk; publically a read-only field.  Odd API
+  /** Number of rows in this Chunk; publicly a read-only field.  Odd API
    *  design choice: public, not-final, read-only, NO-ACCESSOR.
    *
    *  <p>NO-ACCESSOR: This is a high-performance field, and must have a known
@@ -221,9 +170,7 @@ public abstract class Chunk extends Iced<Chunk> {
 
   public void setBytes(byte[] mem) { _mem = mem; }
 
-  /** Used by a ParseExceptionTest to break the Chunk invariants and trigger an
-   *  NPE.  Not intended for public use. */
-  public final void crushBytes() { _mem=null; }
+
 
   final long at8_abs(long i) {
     long x = i - (_start>0 ? _start : 0);
@@ -337,6 +284,10 @@ public abstract class Chunk extends Iced<Chunk> {
    *
    *  @return String value or null if missing. */
   public final BufferedString atStr(BufferedString bStr, int i) { return _chk2 == null ? atStr_impl(bStr, i) : _chk2.atStr_impl(bStr, i); }
+  
+  public String stringAt(int i) {
+    return atStr(new BufferedString(), i).toString();
+  }
 
 
   /** Write a {@code long} using absolute row numbers.  There is no way to
@@ -434,11 +385,13 @@ public abstract class Chunk extends Iced<Chunk> {
   }
 
   public Chunk deepCopy() {
-    Chunk c2 = (Chunk)clone();
+    Chunk c2 = clone();
     c2._vec=null;
     c2._start=-1;
     c2._cidx=-1;
     c2._mem = _mem.clone();
+    c2.initFromBytes();
+    assert len() == c2._len;
     return c2;
   }
 
@@ -472,7 +425,7 @@ public abstract class Chunk extends Iced<Chunk> {
   public final long set(int idx, long l) {
     setWrite();
     if( _chk2.set_impl(idx,l) ) return l;
-    (_chk2 = inflate_impl(new NewChunk(this))).set_impl(idx,l);
+    (_chk2 = inflate()).set_impl(idx,l);
     return l;
   }
 
@@ -495,7 +448,7 @@ public abstract class Chunk extends Iced<Chunk> {
   public final double set(int idx, double d) {
     setWrite();
     if( _chk2.set_impl(idx,d) ) return d;
-    (_chk2 = inflate_impl(new NewChunk(this))).set_impl(idx,d);
+    (_chk2 = inflate()).set_impl(idx,d);
     return d;
   }
 
@@ -513,7 +466,7 @@ public abstract class Chunk extends Iced<Chunk> {
   public final float set(int idx, float f) {
     setWrite();
     if( _chk2.set_impl(idx,f) ) return f;
-    (_chk2 = inflate_impl(new NewChunk(this))).set_impl(idx,f);
+    (_chk2 = inflate()).set_impl(idx,f);
     return f;
   }
 
@@ -530,7 +483,7 @@ public abstract class Chunk extends Iced<Chunk> {
   public final boolean setNA(int idx) {
     setWrite();
     if( _chk2.setNA_impl(idx) ) return true;
-    (_chk2 = inflate_impl(new NewChunk(this))).setNA_impl(idx);
+    (_chk2 = inflate()).setNA_impl(idx);
     return true;
   }
 
@@ -548,7 +501,7 @@ public abstract class Chunk extends Iced<Chunk> {
   public final String set(int idx, String str) {
     setWrite();
     if( _chk2.set_impl(idx,str) ) return str;
-    (_chk2 = inflate_impl(new NewChunk(this))).set_impl(idx,str);
+    (_chk2 = inflate()).set_impl(idx,str);
     return str;
   }
 
@@ -558,7 +511,7 @@ public abstract class Chunk extends Iced<Chunk> {
     long hi = uuid.getMostSignificantBits();
 
     if( _chk2.set_impl(idx, lo, hi) ) return uuid;
-    _chk2 = inflate_impl(new NewChunk(this));
+    _chk2 = inflate();
     _chk2.set_impl(idx,lo, hi);
     return uuid;
   }
@@ -677,7 +630,7 @@ public abstract class Chunk extends Iced<Chunk> {
   }
 
   //NA sparse methods:
-
+  
   /** Sparse Chunks have a significant number of NAs, and support for
    *  skipping over large runs of NAs in a row.
    *  @return true if this Chunk is sparseNA.  */
@@ -710,13 +663,8 @@ public abstract class Chunk extends Iced<Chunk> {
   double max() { return Double.NaN; }
 
 
-  public NewChunk inflate(){
-    return inflate_impl(new NewChunk(this));
-  }
-  /** Chunk-specific bulk inflater back to NewChunk.  Used when writing into a
-   *  chunk and written value is out-of-range for an update-in-place operation.
-   *  Bulk copy from the compressed form into the nc._ls8 array.   */
-  public abstract NewChunk inflate_impl(NewChunk nc);
+  public final NewChunk inflate(){ return extractRows(new NewChunk(this), 0,_len);}
+
 
   /** Return the next Chunk, or null if at end.  Mostly useful for parsers or
    *  optimized stencil calculations that want to "roll off the end" of a
@@ -811,112 +759,49 @@ public abstract class Chunk extends Iced<Chunk> {
     throw new RuntimeException(sb.toString());
   }
 
-  /**
-   * Generic abstraction over Chunk setter methods.
-   */
-  public static abstract class ValueSetter extends Iced<ValueSetter> {
-    /**
-     * Sets a value (possibly a constant) to a position of the Chunk.
-     * @param idx Chunk-local index
-     */
-    public abstract void setValue(Chunk chk, int idx);
+  public abstract <T extends ChunkVisitor> T processRows(T v, int from, int to);
+  public abstract <T extends ChunkVisitor> T processRows(T v, int [] ids);
+
+  // convenience methods wrapping around visitor interface
+  public NewChunk extractRows(NewChunk nc, int from, int to){
+    return processRows(new ChunkVisitor.NewChunkVisitor(nc),from,to)._nc;
+  }
+  public NewChunk extractRows(NewChunk nc, int[] rows){
+    return processRows(new ChunkVisitor.NewChunkVisitor(nc),rows)._nc;
+  }
+  public NewChunk extractRows(NewChunk nc, int row){
+    return processRows(new ChunkVisitor.NewChunkVisitor(nc),row,row+1)._nc;
   }
 
   /**
-   * Create an instance of ValueSetter for a given scalar value.
-   * It creates setter of the appropriate type based on the type of the underlying Vec.
-   * @param v Vec
-   * @param value scalar value
-   * @return instance of ValueSetter
+   * Dense bulk interface, fetch values from the given range
+   * @param vals
+   * @param from
+   * @param to
    */
-  public static ValueSetter createValueSetter(Vec v, Object value) {
-    switch (v.get_type()) {
-      case Vec.T_CAT:
-        return new CatValueSetter(v.domain(), value);
-      case Vec.T_NUM:
-      case Vec.T_TIME:
-        return new NumValueSetter(value);
-      case Vec.T_STR:
-        return new StrValueSetter(value);
-      case Vec.T_UUID:
-        return new UUIDValueSetter(value);
-      default:
-        throw new IllegalArgumentException("Cannot create ValueSetter for a Vec of type = " + v.get_type_str());
-    }
+  public double [] getDoubles(double[] vals, int from, int to){ return getDoubles(vals,from,to, Double.NaN);}
+  public double [] getDoubles(double [] vals, int from, int to, double NA){
+    return processRows(new ChunkVisitor.DoubleAryVisitor(vals,NA),from,to).vals;
   }
-
-  private static class CatValueSetter extends ValueSetter {
-    private int _val;
-
-    public CatValueSetter() {} // for Externalizable
-
-    private CatValueSetter(String[] domain, Object val) {
-      if (! (val instanceof String)) {
-        throw new IllegalArgumentException("Value needs to be categorical, value = " + val);
-      }
-      int factorIdx = -1;
-      for (int i = 0; i < domain.length; i++)
-        if (val.equals(domain[i])) {
-          factorIdx = i;
-          break;
-        }
-      if (factorIdx == -1)
-        throw new IllegalArgumentException("Value is not in the domain of the Vec, value = " + val);
-      _val = factorIdx;
-    }
-
-    @Override
-    public void setValue(Chunk chk, int idx) { chk.set(idx, _val); }
+  public int [] getIntegers(int [] vals, int from, int to, int NA){
+    return processRows(new ChunkVisitor.IntAryVisitor(vals,NA),from,to).vals;
   }
-
-  private static class NumValueSetter extends ValueSetter {
-    private double _val;
-
-    public NumValueSetter() {} // for Externalizable
-
-    private NumValueSetter(Object val) {
-      if (! (val instanceof Number)) {
-        throw new IllegalArgumentException("Value needs to be numeric, value = " + val);
-      }
-      _val = ((Number) val).doubleValue();
-    }
-
-    @Override
-    public void setValue(Chunk chk, int idx) { chk.set(idx, _val); }
+  /**
+   * Dense bulk interface, fetch values from the given ids
+   * @param vals
+   * @param ids
+   */
+  public double[] getDoubles(double [] vals, int [] ids){
+    return processRows(new ChunkVisitor.DoubleAryVisitor(vals),ids).vals;
   }
-
-  private static class StrValueSetter extends ValueSetter {
-    private String _val;
-
-    public StrValueSetter() {} // for Externalizable
-
-    private StrValueSetter(Object val) {
-      if (! (val instanceof String)) {
-        throw new IllegalArgumentException("Value needs to be string, value = " + val);
-      }
-      _val = (String) val;
-    }
-
-    @Override
-    public void setValue(Chunk chk, int idx) { chk.set(idx, _val); }
+  /**
+   * Sparse bulk interface, stream through the compressed values and extract them into dense double array.
+   * @param vals holds extracted values, length must be >= this.sparseLen()
+   * @param ids holds extracted chunk-relative row ids, length must be >= this.sparseLen()
+   * @return number of extracted (non-zero) elements, equal to sparseLen()
+   */
+  public int getSparseDoubles(double[] vals, int[] ids){return getSparseDoubles(vals,ids,Double.NaN);}
+  public int getSparseDoubles(double [] vals, int [] ids, double NA) {
+    return processRows(new ChunkVisitor.SparseDoubleAryVisitor(vals,ids,isSparseNA(),NA),0,_len).sparseLen();
   }
-
-  private static class UUIDValueSetter extends ValueSetter {
-    private UUID _val;
-
-    public UUIDValueSetter() {} // for Externalizable
-
-    private UUIDValueSetter(Object val) {
-      if (val instanceof String) {
-        val = UUID.fromString((String) val);
-      } else if (! (val instanceof UUID)) {
-        throw new IllegalArgumentException("Value needs to be an UUID, value = " + val);
-      }
-      _val = (UUID) val;
-    }
-
-    @Override
-    public void setValue(Chunk chk, int idx) { chk.set(idx, _val); }
-  }
-
 }

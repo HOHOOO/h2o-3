@@ -678,15 +678,13 @@ def generate_weights_glm(csv_weight_filename, col_count, data_type, min_w_value,
         elif data_type == 2:   # generate real intercept/weights
             weight = np.random.uniform(min_w_value, max_w_value, [col_count+1, 1])
         else:
-            print("dataType must be 1 or 2 for now.")
-            sys.exit(1)
+            assert False, "dataType must be 1 or 2 for now."
     elif ('binomial' in family_type.lower()) or ('multinomial' in family_type.lower()):
         if 'binomial' in family_type.lower():  # for binomial, only need 1 set of weight
             class_number -= 1
 
         if class_number <= 0:
-            print("class_number must be >= 2!")
-            sys.exit(1)
+            assert False, "class_number must be >= 2!"
 
         if isinstance(col_count, np.ndarray):
             temp_col_count = col_count[0]
@@ -698,8 +696,7 @@ def generate_weights_glm(csv_weight_filename, col_count, data_type, min_w_value,
         elif data_type == 2:   # generate real intercept/weights
             weight = np.random.uniform(min_w_value, max_w_value, [temp_col_count+1, class_number])
         else:
-            print("dataType must be 1 or 2 for now.")
-            sys.exit(1)
+            assert False, "dataType must be 1 or 2 for now."
 
     # save the generated intercept and weight
     np.savetxt(csv_weight_filename, weight.transpose(), delimiter=",")
@@ -746,8 +743,7 @@ def generate_training_set_glm(csv_filename, row_count, col_count, min_p_value, m
     elif data_type == 2:   # generate random real numbers
         x_mat = np.random.uniform(min_p_value, max_p_value, [row_count, col_count])
     else:
-        print("dataType must be 1 or 2 for now. ")
-        sys.exit(1)
+        assert False, "dataType must be 1 or 2 for now. "
 
     # generate the response vector to the input predictors
     response_y = generate_response_glm(weight, x_mat, noise_std, family_type,
@@ -779,8 +775,7 @@ def generate_clusters(cluster_center_list, cluster_pt_number_list, cluster_radiu
     k = len(cluster_pt_number_list)     # number of clusters to generate clusters for
 
     if (not(k == len(cluster_center_list))) or (not(k == len(cluster_radius_list))):
-        print("Length of list cluster_center_list, cluster_pt_number_list, cluster_radius_list must be the same!")
-        sys.exit(1)
+        assert False, "Length of list cluster_center_list, cluster_pt_number_list, cluster_radius_list must be the same!"
 
     training_sets = []
     for k_ind in range(k):
@@ -1053,8 +1048,7 @@ def one_hot_encoding(enum_level):
 
         return base_array
     else:
-        print ("enum_level must be >= 2.")
-        sys.exit(1)
+        assert False, "enum_level must be >= 2."
 
 
 def generate_response_glm(weight, x_mat, noise_std, family_type, class_method='probability',
@@ -1149,8 +1143,7 @@ def derive_discrete_response(prob_mat, class_method, class_margin):
 
         discrete_y[mat_bool] = -1
     else:
-        print('class_method should be set to "probability" or "threshold" only!')
-        sys.exit(1)
+        assert False, 'class_method should be set to "probability" or "threshold" only!'
 
     return discrete_y
 
@@ -1193,8 +1186,7 @@ def move_files(dir_path, old_name, new_file, action='move'):
         elif 'copy' in action:
             motion = 'cp '
         else:
-            print("Illegal action setting.  It can only be 'move' or 'copy'!")
-            sys.exit(1)
+            assert False, "Illegal action setting.  It can only be 'move' or 'copy'!"
 
         cmd = motion+old_name+' '+new_name           # generate cmd line string to move the file
 
@@ -1365,7 +1357,96 @@ def show_test_results(test_name, curr_test_val, new_test_val):
         return 0
 
 
-def equal_two_arrays(array1, array2, eps, tolerance):
+def assert_H2OTwoDimTable_equal(table1, table2, col_header_list, tolerance=1e-6, check_sign=False, check_all=True,
+                                num_per_dim=10):
+    """
+    This method compares two H2OTwoDimTables and verify that their difference is less than value set in tolerance. It
+    is probably an overkill for I have assumed that the order of col_header_list may not be in the same order as
+    the values in the table.cell_values[ind][0].  In addition, I do not assume an order for the names in the
+    table.cell_values[ind][0] either for there is no reason for an order to exist.
+
+    To limit the test run time, we can test a randomly sampled of points instead of all points
+
+    :param table1: H2OTwoDimTable to be compared
+    :param table2: the other H2OTwoDimTable to be compared
+    :param col_header_list: list of strings denote names that we can the comparison to be performed
+    :param tolerance: default to 1e-6
+    :param check_sign: bool, determine if the sign of values are important or not.  For eigenvectors, they are not.
+    :param check_all: bool, determine if we need to compare every single element
+    :param num_per_dim: integer, number of elements to sample per dimension.  We have 3 here.
+    :return: None if comparison succeed and raise an error if comparison failed for whatever reason
+    """
+    num_comparison = len(set(col_header_list))
+    size1 = len(table1.cell_values)
+    size2 = len(table2.cell_values)
+    worst_error = 0
+
+    assert size1==size2, "The two H2OTwoDimTables are of different size!"
+    assert num_comparison<=size1, "H2OTwoDimTable do not have all the attributes specified in col_header_list."
+    flip_sign_vec = generate_sign_vec(table1, table2) if check_sign else [1]*len(table1.cell_values[0])  # correct for sign change for eigenvector comparisons
+    randRange1 = generate_for_indices(len(table1.cell_values), check_all, num_per_dim, 0)
+    randRange2 = generate_for_indices(len(table2.cell_values), check_all, num_per_dim, 0)
+
+
+    for ind in range(num_comparison):
+        col_name = col_header_list[ind]
+        next_name=False
+
+        for name_ind1 in randRange1:
+            if col_name!=str(table1.cell_values[name_ind1][0]):
+                continue
+
+            for name_ind2 in randRange2:
+                if not(col_name==str(table2.cell_values[name_ind2][0])):
+                    continue
+
+                # now we have the col header names, do the actual comparison
+                if str(table1.cell_values[name_ind1][0])==str(table2.cell_values[name_ind2][0]):
+                    randRange3 = generate_for_indices(len(table2.cell_values[name_ind2]), check_all, num_per_dim,1)
+                    for indC in randRange3:
+                        val1 = table1.cell_values[name_ind1][indC]
+                        val2 = table2.cell_values[name_ind2][indC]*flip_sign_vec[indC]
+
+                        if isinstance(val1, float) and isinstance(val2, float):
+                            compare_val_ratio = abs(val1-val2)/max(1, abs(val1), abs(val2))
+                            if compare_val_ratio > tolerance:
+                                print("Table entry difference is {0}".format(compare_val_ratio))
+                                assert False, "Table entries are not equal within tolerance."
+
+                            worst_error = max(worst_error, compare_val_ratio)
+                        else:
+                            assert False, "Tables contains non-numerical values.  Comparison is for numericals only!"
+                    next_name=True
+                    break
+                else:
+                    assert False, "Unknown metric names found in col_header_list."
+            if next_name:   # ready to go to the next name in col_header_list
+                break
+    print("******* Congrats!  Test passed.  Maximum difference of your comparison is {0}".format(worst_error))
+
+def generate_for_indices(list_size, check_all, num_per_dim, start_val):
+    if check_all:
+        return list(range(start_val, list_size))
+    else:
+        randomList = list(range(start_val, list_size))
+        shuffle(randomList)
+        return randomList[0:min(list_size, num_per_dim)]
+
+def generate_sign_vec(table1, table2):
+    sign_vec = [1]*len(table1.cell_values[0])
+    for indC in range(1, len(table2.cell_values[0])):   # may need to look at other elements since some may be zero
+        for indR in range(0, len(table2.cell_values)):
+            if (abs(table1.cell_values[indR][indC]) > 0) and (abs(table2.cell_values[indR][indC]) > 0):
+                sign_vec[indC] = int(np.sign(table1.cell_values[indR][indC]) * np.sign(table2.cell_values[indR][indC]))
+                # if (np.sign(table1.cell_values[indR][indC])!=np.sign(table2.cell_values[indR][indC])):
+                #     sign_vec[indC] = -1
+                # else:
+                #     sign_vec[indC] = 1
+                break       # found what we need.  Goto next column
+
+    return sign_vec
+
+def equal_two_arrays(array1, array2, eps, tolerance, throwError=True):
     """
     This function will compare the values of two python tuples.  First, if the values are below
     eps which denotes the significance level that we care, no comparison is performed.  Next,
@@ -1394,8 +1475,40 @@ def equal_two_arrays(array1, array2, eps, tolerance):
 
         return True                                     # return True, elements of two arrays are close enough
     else:
-        print("The two arrays are of different size!")
-        sys.exit(1)
+        if throwError:
+            assert False, "The two arrays are of different size!"
+        else:
+            return False
+
+def equal_2D_tables(table1, table2, tolerance=1e-6):
+    """
+    This function will compare the values of two python tuples.  First, if the values are below
+    eps which denotes the significance level that we care, no comparison is performed.  Next,
+    False is returned if the different between any elements of the two array exceeds some tolerance.
+
+    :param array1: numpy array containing some values of interest
+    :param array2: numpy array containing some values of interest that we would like to compare it with array1
+    :param eps: significance level that we care about in order to perform the comparison
+    :param tolerance: threshold for which we allow the two array elements to be different by
+
+    :return: True if elements in array1 and array2 are close and False otherwise
+    """
+
+    size1 = len(table1)
+    if size1 == len(table2):    # arrays must be the same size
+        # compare two arrays
+        for ind in range(size1):
+            if len(table1[ind]) == len(table2[ind]):
+                for ind2 in range(len(table1[ind])):
+                    if type(table1[ind][ind2]) == float:
+                        if abs(table1[ind][ind2]-table2[ind][ind2]) > tolerance:
+                            return False
+            else:
+                assert False, "The two arrays are of different size!"
+        return True
+
+    else:
+        assert False, "The two arrays are of different size!"
 
 
 def compare_two_arrays(array1, array2, eps, tolerance, comparison_string, array1_string, array2_string, error_string,
@@ -1495,8 +1608,7 @@ def get_train_glm_params(model, what_param, family_type='gaussian'):
             return p_value_h2o
 
         else:
-            print("P-values are only available to Gaussian family.")
-            sys.exit(1)
+            assert False, "P-values are only available to Gaussian family."
 
     elif what_param == 'weights':
         if 'gaussian' in family_type.lower():
@@ -1528,8 +1640,7 @@ def get_train_glm_params(model, what_param, family_type='gaussian'):
         elif 'binomial' in family_type.lower():
             return model.confusion_matrix().table
     else:
-        print("parameter value not found in GLM model")
-        sys.exit(1)
+        assert False, "parameter value not found in GLM model"
 
 
 def less_than(val1, val2):
@@ -1597,8 +1708,7 @@ def remove_csv_files(dir_path, suffix=".csv", action='remove', new_dir_path=""):
             elif 'copy' in action:
                 move_files(new_dir_path, temp_fn, fn, action=action)
             else:
-                print("action string can only be 'remove' or 'copy.")
-                sys.exit(1)
+                assert False, "action string can only be 'remove' or 'copy."
 
 
 def extract_comparison_attributes_and_print(model_h2o, h2o_model_test_metrics, end_test_str, want_p_values,
@@ -1783,8 +1893,7 @@ def extract_comparison_attributes_and_print_multinomial(model_h2o, h2o_model_tes
         (template_weight, template_logloss_train, template_confusion_matrix_train, template_accuracy_train,
          template_logloss_test, template_confusion_matrix_test, template_accuracy_test) = template_params
     else:
-        print("No valid template parameters are given for comparison.")
-        sys.exit(1)
+        assert False, "No valid template parameters are given for comparison."
 
     # print and/or compare the weights between template and H2O
     compare_index = 0
@@ -1920,9 +2029,8 @@ def grab_model_params_metrics(model_h2o, h2o_model_test_metrics, family_type):
         h2o_accuracy_train = 1-float(h2o_confusion_matrix_train.cell_values[last_index][real_last_index])
         h2o_accuracy_test = 1-float(h2o_confusion_matrix_test.cell_values[last_index][real_last_index])
     else:
-        print("Only 'multinomial' and 'binomial' distribution families are supported for grab_model_params_metrics "
-              "function!")
-        sys.exit(1)
+        assert False, "Only 'multinomial' and 'binomial' distribution families are supported for " \
+                      "grab_model_params_metrics function!"
 
     return h2o_weight, h2o_logloss_train, h2o_confusion_matrix_train, h2o_accuracy_train, h2o_logloss_test,\
            h2o_confusion_matrix_test, h2o_accuracy_test
@@ -2013,8 +2121,7 @@ def add_fold_weights_offset_columns(h2o_frame, nfold_max_weight_offset, column_n
         elif 'offset_column' in column_type:
             temp_a = random.uniform(0, nfold_max_weight_offset)*np.asmatrix(np.ones(number_row)).transpose()
         else:
-            print("column_type must be either 'fold_assignment' or 'weights_column'!")
-            sys.exit(1)
+            assert False, "column_type must be either 'fold_assignment' or 'weights_column'!"
 
         fold_assignments = h2o.H2OFrame(temp_a)
         fold_assignments.set_names([column_names[index]])
@@ -2238,8 +2345,7 @@ def generate_random_words(word_length):
 
         return ''.join((random.choice(all_chars)) for index in range(int(word_length)))
     else:
-        print("word_length must be an integer greater than 0.")
-        sys.exit(1)
+        assert False, "word_length must be an integer greater than 0."
 
 
 def generate_redundant_parameters(hyper_params, gridable_parameters, gridable_defaults, error_number):
@@ -2336,8 +2442,7 @@ def error_diff_2_models(grid_table1, grid_table2, metric_name):
     if (num_model > 0):
         return metric_diff/num_model
     else:
-        print("error_diff_2_models: your table contains zero models.")
-        sys.exit(1)
+        assert False, "error_diff_2_models: your table contains zero models."
 
 
 def find_grid_runtime(model_list):
@@ -2563,8 +2668,8 @@ def compare_frames(frame1, frame2, numElements, tol_time=0, tol_numeric=0, stric
     assert rows1 == rows2 and cols1 == cols2, "failed dim check! frame 1 rows:{0} frame 2 rows:{1} frame 1 cols:{2} " \
                                               "frame2 cols:{3}".format(rows1, rows2, cols1, cols2)
 
-    na_frame1 = frame1.isna().sum()
-    na_frame2 = frame2.isna().sum()
+    na_frame1 = frame1.isna().sum().sum(axis=1)[:,0]
+    na_frame2 = frame2.isna().sum().sum(axis=1)[:,0]
 
     if compare_NA:      # check number of missing values
         assert na_frame1 == na_frame2, "failed numbers of NA check!  Frame 1 NA number: {0}, frame 2 " \
@@ -2586,9 +2691,7 @@ def compare_frames(frame1, frame2, numElements, tol_time=0, tol_numeric=0, stric
         else:
             if str(c2_type) == 'enum':  # orc files do not have enum column type.  We convert it here
                 frame1[col_ind].asfactor()
-            else:
-                assert c1_type == c2_type, "failed column type check! frame1 col type: {0}, frame2 col type: " \
-                                           "{1}".format(c1_type, c2_type)
+
         # compare string
         if (str(c1_type) == 'string') or (str(c1_type) == 'enum'):
             compareOneStringColumn(frame1, frame2, col_ind, rows1, numElements)
@@ -2809,5 +2912,67 @@ def cannaryHDFSTest(hdfs_name_node, file_name):
         else:       # exception is caused by other reasons.
             return False
 
+def extract_scoring_history_field(aModel, fieldOfInterest):
+    """
+    Given a fieldOfInterest that are found in the model scoring history, this function will extract the list
+    of field values for you from the model.
+
+    :param aModel: H2O model where you want to extract a list of fields from the scoring history
+    :param fieldOfInterest: string representing a field of interest.
+    :return: List of field values or None if it cannot be found
+    """
+
+    allFields = aModel._model_json["output"]["scoring_history"]._col_header
+    if fieldOfInterest in allFields:
+        cellValues = []
+        fieldIndex = allFields.index(fieldOfInterest)
+        for eachCell in aModel._model_json["output"]["scoring_history"].cell_values:
+            cellValues.append(eachCell[fieldIndex])
+        return cellValues
+    else:
+        return None
 
 
+def model_run_time_sorted_by_time(model_list):
+    """
+    This function is written to sort the metrics that we care in the order of when the model was built.  The
+    oldest model metric will be the first element.
+    :param model_list: list of models built sequentially that contains metric of interest among other fields
+    :return: model run time in secs sorted by order of building
+    """
+
+    model_num = len(model_list)
+
+    model_runtime_sec_list = [None] * model_num
+
+
+    for index in range(model_num):
+        model_index = int(model_list[index]._id.split('_')[-1])
+        model_runtime_sec_list[model_index] = \
+            (model_list[index]._model_json["output"]["run_time"]/1000.0)
+
+    return model_runtime_sec_list
+
+
+def model_seed_sorted_by_time(model_list):
+    """
+    This function is written to find the seed used by each model in the order of when the model was built.  The
+    oldest model metric will be the first element.
+    :param model_list: list of models built sequentially that contains metric of interest among other fields
+    :return: model seed sorted by order of building
+    """
+
+    model_num = len(model_list)
+
+    model_seed_list = [None] * model_num
+
+
+    for index in range(model_num):
+        model_index = int(model_list[index]._id.split('_')[-1])
+
+        for pIndex in range(len(model_list.models[0]._model_json["parameters"])):
+            if model_list.models[index]._model_json["parameters"][pIndex]["name"]=="seed":
+                model_seed_list[model_index]=model_list.models[index]._model_json["parameters"][pIndex]["actual_value"]
+                break
+
+    return model_seed_list

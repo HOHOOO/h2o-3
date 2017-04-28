@@ -329,7 +329,6 @@ public final class ParseDataset {
 
     ParseWriter.ParseErr [] errs = ArrayUtils.append(setup._errs,mfpt._errors);
     if(errs.length > 0) {
-      String[] warns = new String[errs.length];
       // compute global line numbers for warnings/errs
       HashMap<String, Integer> fileChunkOffsets = new HashMap<>();
       for (int i = 0; i < mfpt._fileChunkOffsets.length; ++i)
@@ -342,18 +341,20 @@ public final class ParseDataset {
           errs[i]._lineNum = errs[i]._gLineNum - espc[espcOff];
         }
       }
-      SortedSet s = new TreeSet<>(new Comparator<ParseWriter.ParseErr>() {
+      SortedSet<ParseWriter.ParseErr> s = new TreeSet<>(new Comparator<ParseWriter.ParseErr>() {
         @Override
         public int compare(ParseWriter.ParseErr o1, ParseWriter.ParseErr o2) {
           long res = o1._gLineNum - o2._gLineNum;
+          if (res == 0) res = o1._byteOffset - o2._byteOffset;
           if (res == 0) return o1._err.compareTo(o2._err);
           return (int) res < 0 ? -1 : 1;
         }
       });
-      for(ParseWriter.ParseErr e:errs)s.add(e);
-      errs = (ParseWriter.ParseErr[]) s.toArray(new ParseWriter.ParseErr[s.size()]);
-      for (int i = 0; i < errs.length; ++i)
-        Log.warn(warns[i] = errs[i].toString());
+      Collections.addAll(s, errs);
+      String[] warns = new String[s.size()];
+      int i = 0;
+      for (ParseWriter.ParseErr err : s)
+        Log.warn(warns[i++] = err.toString());
       job.setWarnings(warns);
     }
     job.update(0,"Calculating data summary.");
@@ -526,6 +527,7 @@ public final class ParseDataset {
                   for (int j = 0; j < tDomLen; j++)
                     mergedDom[mbi++] = thisDom[tbi++];
                   tDomLen = UnsafeUtils.get4(thisDom, tbi);
+                  assert tDomLen >= 0 : getClass().getName() + ".reduce/1: tDomLen=" + tDomLen + ", tbi=" + tbi + "; fi=" + fi + "/" + _catColIdxs.length + "packed size=" + thisDom.length + ", tlen=" + tLen;
                   tbi += 4;
                   tCat.set(thisDom, tbi, tDomLen);
                   ti++;
@@ -533,6 +535,7 @@ public final class ParseDataset {
                     obi += oDomLen;
                     oDomLen = UnsafeUtils.get4(otherDom, obi);
                     obi += 4;
+                    assert oDomLen >= 0 : getClass().getName() + ".reduce/2: oDomLen=" + oDomLen + ", obi=" + obi;
                     oCat.set(otherDom, obi, oDomLen);
                     oi++;
                   }
@@ -543,6 +546,7 @@ public final class ParseDataset {
                     mergedDom[mbi++] = otherDom[obi++];
                   oDomLen = UnsafeUtils.get4(otherDom, obi);
                   obi += 4;
+                  assert oDomLen >= 0 : getClass().getName() + ".reduce/3: oDomLen=" + oDomLen + ", obi=" + obi;
                   oCat.set(otherDom, obi, oDomLen);
                   oi++;
                 }
@@ -817,7 +821,8 @@ public final class ParseDataset {
       try {
         switch( cpr ) {
         case NONE:
-          boolean disableParallelParse = (_keys.length > TOO_MANY_KEYS_COUNT) && (vec.nChunks() <= SMALL_FILE_NCHUNKS);
+          boolean disableParallelParse = (_keys.length > TOO_MANY_KEYS_COUNT) &&
+                  (vec.nChunks() <= SMALL_FILE_NCHUNKS) && _parseSetup._parse_type.isStreamParseSupported();
           if( _parseSetup._parse_type.isParallelParseSupported() && (! disableParallelParse)) {
             new DistributedParse(_vg, localSetup, _vecIdStart, chunkStartIdx, this, key, vec.nChunks()).dfork(vec).getResult(false);
             for( int i = 0; i < vec.nChunks(); ++i )

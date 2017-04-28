@@ -161,7 +161,7 @@ public class DeepWaterTask extends FrameTask<DeepWaterTask> {
         iter = new DeepWaterDatasetIterator(trainData, trainLabels, _localmodel._dataInfo, batchSize, _localmodel.get_params()._cache_data);
       }
       else if (_localmodel.get_params()._problem_type == DeepWaterParameters.ProblemType.text) {
-        iter = new DeepWaterTextIterator(trainData, trainLabels, batchSize, 100/*FIXME*/, _localmodel.get_params()._cache_data);
+        iter = new DeepWaterTextIterator(trainData, trainLabels, batchSize, 56/*FIXME*/, _localmodel.get_params()._cache_data);
       }
 
       NativeTrainTask ntt;
@@ -177,11 +177,13 @@ public class DeepWaterTask extends FrameTask<DeepWaterTask> {
 
         //fork off GPU work, but let the iterator.Next() wait on completion before swapping again
         //System.err.println("data: " + Arrays.toString(iter.getData()));
+        /*
         float[] preds = _localmodel._backend.predict(_localmodel._model, iter.getData());
         if (Float.isNaN(ArrayUtils.sum(preds))) {
           Log.err(DeepWaterModel.unstable_msg);
           throw new UnsupportedOperationException(DeepWaterModel.unstable_msg);
         }
+        */
 //        System.err.println("pred: " + Arrays.toString(preds));
         ntt = new NativeTrainTask(_localmodel._backend, _localmodel._model, iter.getData(), iter.getLabel());
         fs.add(H2O.submitTask(ntt));

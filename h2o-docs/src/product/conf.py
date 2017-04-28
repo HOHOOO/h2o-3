@@ -55,7 +55,7 @@ master_doc = 'index'
 
 # General information about the project.
 project = u'H2O'
-copyright = u'2016 H2O, Inc'
+copyright = u'2016-2017 H2O.ai'
 author = u'h2o'
 
 # The version info for the project you're documenting, acts as replacement for
@@ -97,6 +97,13 @@ exclude_patterns = [
     "Getting-Started.rst",
     "Trouble-Shooting.rst",
     "ensembles.rst",
+    "pojo-quick-start.rst",
+    "hadoop.rst",
+    "ibm-dsx.rst",
+    "azure.rst",
+    "docker.rst",
+    "aws.rst",
+    "data-sources.rst",
 
     # Exclude directories that were part of the old docs that might still need to be purged.
     "flow",

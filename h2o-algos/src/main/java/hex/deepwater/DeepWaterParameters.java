@@ -53,7 +53,8 @@ public class DeepWaterParameters extends Model.Parameters {
 
   public enum Backend {
     unknown,
-    mxnet, caffe, tensorflow
+    mxnet, caffe, tensorflow, // C++
+    xgrpc // anything that speaks grpc
   }
 
   public enum ProblemType {
@@ -90,7 +91,7 @@ public class DeepWaterParameters extends Model.Parameters {
   public boolean _use_all_factor_levels = true;
 
   public enum MissingValuesHandling {
-    Skip, MeanImputation
+    MeanImputation, Skip
   }
 
   public MissingValuesHandling _missing_values_handling = MissingValuesHandling.MeanImputation;
@@ -176,7 +177,7 @@ public class DeepWaterParameters extends Model.Parameters {
    * why the momentum is best ramped up slowly.
    * This parameter is only active if adaptive learning rate is disabled.
    */
-  public double _learning_rate = .005;
+  public double _learning_rate = 1e-3;
 
   /**
    * Learning rate annealing reduces the learning rate to "freeze" into
@@ -206,7 +207,7 @@ public class DeepWaterParameters extends Model.Parameters {
    * The momentum used for training will remain the same for training beyond reaching that point.
    * This parameter is only active if adaptive learning rate is disabled.
    */
-  public double _momentum_stable = 0.99;
+  public double _momentum_stable = 0.9;
 
 
   /**
@@ -285,10 +286,10 @@ public class DeepWaterParameters extends Model.Parameters {
     if (_clip_gradient<=0)
       dl.error("_clip_gradient", "Clip gradient must be >= 0");
 
-    if (_hidden != null && _network_definition_file != null)
+    if (_hidden != null && _network_definition_file != null && !_network_definition_file.isEmpty())
       dl.error("_hidden", "Cannot provide hidden layers and a network definition file at the same time.");
 
-    if (_activation != null && _network_definition_file != null)
+    if (_activation != null && _network_definition_file != null && !_network_definition_file.isEmpty())
       dl.error("_activation", "Cannot provide activation functions and a network definition file at the same time.");
 
     if (_problem_type == ProblemType.image) {

@@ -7,17 +7,18 @@ Currently supported versions:
 
 -  CDH 5.2
 -  CDH 5.3
--  CDH 5.4.2
--  CDH 5.5.3
--  CDH 5.6.0
--  CDH 5.7.0
--  CDH 5.8.0
+-  CDH 5.4
+-  CDH 5.5
+-  CDH 5.6
+-  CDH 5.7
+-  CDH 5.8
 -  HDP 2.1
 -  HDP 2.2
 -  HDP 2.3
 -  HDP 2.4
--  MapR 3.1.1
--  MapR 4.0.1
+-  HDP 2.5
+-  HDP 2.6
+-  MapR 4.0
 -  MapR 5.0
 -  MapR 5.1
 
@@ -38,7 +39,7 @@ Prerequisite: Open Communication Paths
 --------------------------------------
 
 H2O communicates using two communication paths. Verify these are open
-and available for use by H2O. 
+and available for use by H2O.
 
 **Path 1: mapper to driver**
 
@@ -46,7 +47,9 @@ Optionally specify this port using the ``-driverport`` option in the
 ``hadoop jar`` command (see "Hadoop Launch Parameters" below). This port
 is opened on the driver host (the host where you entered the
 ``hadoop jar`` command). By default, this port is chosen randomly by the
-operating system.
+operating system. If you don't want to specify an exact port but you
+still wish to restrict the port to a certain range of ports, you can use
+the option ``-driverportrange``.
 
 **Path 2: mapper to mapper**
 
@@ -74,7 +77,7 @@ Walkthrough
 The following steps show you how to download or build H2O with Hadoop
 and the parameters involved in launching H2O from the command line.
 
-1. Download the latest H2O release for your version of Hadoop. Refer to the H2O on Hadoop `Download <http://www.h2o.ai/download/h2o/hadoop>`__ page.
+1. Download the latest H2O release for your version of Hadoop. Refer to the `H2O on Hadoop <http://www.h2o.ai/download>`__ tab of the download page for either the latest stable release or the nightly bleeding edge release.
 
 2. Prepare the job input on the Hadoop Node by unzipping the build file
    and changing to the directory with the Hadoop and H2O's driver jar
@@ -121,7 +124,7 @@ and the parameters involved in launching H2O from the command line.
        H2O node 172.16.2.184:54321 requested flatfile
        Sending flatfiles to nodes...
         [Sending flatfile to node 172.16.2.184:54321]
-       H2O node 172.16.2.184:54321 reports H2O cluster size 1 
+       H2O node 172.16.2.184:54321 reports H2O cluster size 1
        H2O cluster (1 nodes) is up
        Blocking until the H2O cluster shuts down...
 
@@ -133,11 +136,15 @@ Hadoop Launch Parameters
 -  ``-h | -help``: Display help
 -  ``-jobname <JobName>``: Specify a job name for the Jobtracker to use;
    the default is ``H2O_nnnnn`` (where n is chosen randomly)
+-  ``-principal <kerberos principal> -keytab <keytab path> | -run_as_user <hadoop username>``: Optionally specify a Kerberos principal and keytab or specify the ``run_as_user`` parameter to start clusters on behalf of the user/principal. Note that using ``run_as_user`` implies that the Hadoop cluster does not have Kerberos. 
 -  ``-driverif <IP address of mapper -> driver callback interface>``:
    Specify the IP address for callback messages from the mapper to the
    driver.
 -  ``-driverport <port of mapper -> callback interface>``: Specify the
    port number for callback messages from the mapper to the driver.
+-  ``-driverportrange <range portX-portY of mapper-> callback interface>``:
+   Specify the allowed port range of the driver callback interface,
+   eg. 50000-55000.
 -  ``-network <IPv4Network1>[,<IPv4Network2>]``: Specify the IPv4
    network(s) to bind to the H2O nodes; multiple networks can be
    specified to force H2O to use the specified host in the Hadoop
@@ -190,7 +197,7 @@ enable access, follow the instructions below.
 
 Edit Hadoop's ``core-site.xml``, then set the ``HADOOP_CONF_DIR``
 environment property to the directory containing the ``core-site.xml``
-file. For an example ``core-site.xml`` file, file, refer to :ref:`Core-site.xml`. Typically, the configuration directory for
+file. For an example ``core-site.xml`` file, refer to :ref:`Core-site.xml`. Typically, the configuration directory for
 most Hadoop distributions is ``/etc/hadoop/conf``.
 
 You can also pass the S3 credentials when launching H2O with the Hadoop
@@ -209,7 +216,7 @@ Then import the data with the S3 URL path:
 
    ::
 
-       importFiles [ "s3n:/path/to/bucket/file/file.tab.gz" ] 
+       importFiles [ "s3n:/path/to/bucket/file/file.tab.gz" ]
 
 -  To import the data from the R API:
 

@@ -1,7 +1,10 @@
 package water.util;
 
 import water.*;
-import water.fvec.*;
+import water.fvec.AppendableVec;
+import water.fvec.Frame;
+import water.fvec.NewChunk;
+import water.fvec.Vec;
 
 import java.text.DecimalFormat;
 import java.util.*;
@@ -163,6 +166,10 @@ public class ArrayUtils {
     for(int i = 0; i < a.length; i++ ) a[i] += b[i];
     return a;
   }
+  public static float[] add(float ca, float[] a, float cb, float[] b) {
+    for(int i = 0; i < a.length; i++ ) a[i] = (ca * a[i]) + (cb * b[i]);
+    return a;
+  }
   public static float[][] add(float[][] a, float[][] b) {
     for(int i = 0; i < a.length; i++ ) add(a[i],b[i]);
     return a;
@@ -266,6 +273,12 @@ public class ArrayUtils {
     for (int i=0; i<ds.length; i++) div(ds[i],n[i]);
     return ds;
   }
+
+  public static double[][] div(double[][] ds, double[] n) {
+    for (int i=0; i<ds.length; i++) div(ds[i],n[i]);
+    return ds;
+  }
+
   public static double[] div(double[] ds, long[] n) {
     for (int i=0; i<ds.length; i++) ds[i]/=n[i];
     return ds;
@@ -274,6 +287,12 @@ public class ArrayUtils {
     for (int i=0; i<ds.length; i++) ds[i]/=n[i];
     return ds;
   }
+
+  public static double[][] mult(double[][] ds, double[] n) {
+    for (int i=0; i<ds.length; i++) mult(ds[i],n[i]);
+    return ds;
+  }
+
   public static float[] mult(float[] nums, float n) {
 //    assert !Float.isInfinite(n) : "Trying to multiply " + Arrays.toString(nums) + " by  " + n; // Almost surely not what you want
     for (int i=0; i<nums.length; i++) nums[i] *= n;
@@ -302,9 +321,14 @@ public class ArrayUtils {
   }
 
   public static double[] multArrVec(double[][] ary, double[] nums) {
+    if(ary == null) return null;
+    double[] res = new double[ary.length];
+    return multArrVec(ary, nums, res);
+  }
+
+  public static double[] multArrVec(double[][] ary, double[] nums, double[] res) {
     if(ary == null || nums == null) return null;
     assert ary[0].length == nums.length : "Inner dimensions must match: Got " + ary[0].length + " != " + nums.length;
-    double[] res = new double[ary.length];
     for(int i = 0; i < ary.length; i++)
       res[i] = innerProduct(ary[i], nums);
     return res;
@@ -322,10 +346,13 @@ public class ArrayUtils {
     return res;
   }
 
-  public static double[][] multArrArr(double[][] ary1, double[][] ary2) {
+  /*
+  with no memory allocation for results.  We assume the memory is already allocated.
+   */
+  public static double[][] multArrArr(double[][] ary1, double[][] ary2, double[][] res) {
     if(ary1 == null || ary2 == null) return null;
-    assert ary1[0].length == ary2.length : "Inner dimensions must match: Got " + ary1[0].length + " != " + ary2.length;   // Inner dimensions must match
-    double[][] res = new double[ary1.length][ary2[0].length];
+    // Inner dimensions must match
+    assert ary1[0].length == ary2.length : "Inner dimensions must match: Got " + ary1[0].length + " != " + ary2.length;
 
     for(int i = 0; i < ary1.length; i++) {
       for(int j = 0; j < ary2[0].length; j++) {
@@ -336,6 +363,16 @@ public class ArrayUtils {
       }
     }
     return res;
+  }
+
+  /*
+  with memory allocation for results
+   */
+  public static double[][] multArrArr(double[][] ary1, double[][] ary2) {
+    if(ary1 == null || ary2 == null) return null;
+    double[][] res = new double[ary1.length][ary2[0].length];
+
+    return multArrArr(ary1, ary2, res);
   }
 
   public static double[][] transpose(double[][] ary) {
@@ -816,11 +853,24 @@ public class ArrayUtils {
   public static double[] gaussianVector(int n, long seed) { return gaussianVector(n, getRNG(seed)); }
   public static double[] gaussianVector(int n, Random random) {
     if(n <= 0) return null;
-    double[] result = new double[n];
+    double[] result = new double[n];  // ToDo: Get rid of this new action.
 
     for(int i = 0; i < n; i++)
       result[i] = random.nextGaussian();
     return result;
+  }
+
+  /** Remove the array allocation in this one */
+  public static double[] gaussianVector(long seed, double[] vseed) {
+    if (vseed == null)
+      return null;
+
+    Random random = getRNG(seed);
+    int arraySize = vseed.length;
+    for (int i=0; i < arraySize; i++) {
+      vseed[i] = random.nextGaussian();
+    }
+    return vseed;
   }
 
   /** Returns number of strings which represents a number. */
@@ -1179,6 +1229,12 @@ public class ArrayUtils {
 
   public static double[] select(double[] ary, int[] idxs) {
     double [] res = MemoryManager.malloc8d(idxs.length);
+    for(int i = 0; i < res.length; ++i)
+      res[i] = ary[idxs[i]];
+    return res;
+  }
+  public static int[] select(int[] ary, int[] idxs) {
+    int [] res = MemoryManager.malloc4(idxs.length);
     for(int i = 0; i < res.length; ++i)
       res[i] = ary[idxs[i]];
     return res;
@@ -1614,4 +1670,9 @@ public class ArrayUtils {
     return res;
   }
 
+  public static boolean isSorted(int[] vals) {
+    for (int i = 1; i < vals.length; ++i)
+      if (vals[i - 1] > vals[i]) return false;
+    return true;
+  }
 }

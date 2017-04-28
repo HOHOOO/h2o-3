@@ -60,7 +60,7 @@ public class GLRMModel extends Model<GLRMModel, GLRMModel.GLRMParameters, GLRMMo
     public DataInfo.TransformType _transform = DataInfo.TransformType.NONE;
     public int _k = 1;                       // Rank of resulting XY matrix
     public GlrmInitialization _init = GlrmInitialization.PlusPlus;  // Initialization of Y matrix
-    public SVDParameters.Method _svd_method = SVDParameters.Method.Randomized;  // SVD initialization method (for _init = SVD)
+    public SVDParameters.Method _svd_method = SVDParameters.Method.Power;  // SVD initialization method (for _init = SVD)
     public Key<Frame> _user_y;               // User-specified Y matrix (for _init = User)
     public Key<Frame> _user_x;               // User-specified X matrix (for _init = User)
     public boolean _expand_user_y = true;    // Should categorical columns in _user_y be expanded via one-hot encoding? (for _init = User)
@@ -154,6 +154,16 @@ public class GLRMModel extends Model<GLRMModel, GLRMModel.GLRMParameters, GLRMMo
 
     // Training time
     public ArrayList<Long> _training_time_ms = new ArrayList<>();
+
+    // Total column variance for expanded and transformed data
+    public double _total_variance;
+
+    // Standard deviation of each principal component
+    public double[] _std_deviation;
+
+    // Importance of principal components
+    // Standard deviation, proportion of variance explained, and cumulative proportion of variance explained
+    public TwoDimTable _importance;
 
     public GLRMOutput(GLRM b) { super(b); }
 
@@ -381,7 +391,7 @@ public class GLRMModel extends Model<GLRMModel, GLRMModel.GLRMParameters, GLRMMo
     fullFrm.add(loadingFrm);
 
     GLRMScore gs = new GLRMScore(ncols, _parms._k, false).doAll(fullFrm);
-    ModelMetrics mm = gs._mb.makeModelMetrics(GLRMModel.this, adaptedFr, null, null);   // save error metrics based on imputed data
+    ModelMetrics mm = gs._mb.makeModelMetrics(GLRMModel.this, frame, null, null);   // save error metrics based on imputed data
     return (ModelMetricsGLRM) mm;
   }
 

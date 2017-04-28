@@ -41,6 +41,9 @@ import water.util.PrettyPrint;
  * @author cliffc
  */
 abstract public class MemoryManager {
+  // Track timestamp of last oom log to avoid spamming the logs with junk.
+  private static volatile long oomLastLogTimestamp = 0;
+  private static final long SIXTY_SECONDS_IN_MILLIS = 60 * 1000;
 
   // max heap memory
   public static final long MEM_MAX = Runtime.getRuntime().maxMemory();
@@ -57,7 +60,7 @@ abstract public class MemoryManager {
   private static volatile boolean MEM_LOW_CRITICAL = false;
 
   // Lock for blocking on allocations
-  private static Object _lock = new Object();
+  private static final Object _lock = new Object();
 
   // A monotonically increasing total count memory allocated via MemoryManager.
   // Useful in tracking total memory consumed by algorithms - just ask for the
@@ -117,6 +120,7 @@ abstract public class MemoryManager {
       Cleaner.DESIRED = d;      // Desired caching level
     final long cacheUsageNow = Cleaner.Histo.cached();
 
+    boolean skipThisLogMessageToAvoidSpammingTheLogs = false;
     String m="";
     if( cacheUsageNow > Cleaner.DESIRED ) {
       m = (CAN_ALLOC?"Swapping!  ":"blocked:   ");
@@ -130,9 +134,21 @@ abstract public class MemoryManager {
         // Here we enter the zone of possibly dieing for OOM.  There's no point
         // in blocking allocations, as no more memory can be freed by more
         // cache-flushing.  Might as well proceed on a "best effort" basis.
+
+        long now = System.currentTimeMillis();
+        if ((now - oomLastLogTimestamp) >= SIXTY_SECONDS_IN_MILLIS) {
+          oomLastLogTimestamp = now;
+        }
+        else {
+          skipThisLogMessageToAvoidSpammingTheLogs = true;
+        }
       } else { 
         m = "MemGood:   "; // Cache is low enough, room for POJO allocation - full steam ahead!
       }
+    }
+
+    if (skipThisLogMessageToAvoidSpammingTheLogs) {
+      return;
     }
 
     // No logging if under memory pressure: can deadlock the cleaner thread
@@ -206,6 +222,7 @@ abstract public class MemoryManager {
     return malloc(elems,bytes,type,orig,from,false);
   }
   static Object malloc(int elems, long bytes, int type, Object orig, int from , boolean force) {
+    assert elems >= 0 : "Bad size " + elems; // is 0 okay?!
     // Do not assert on large-size here.  RF's temp internal datastructures are
     // single very large arrays.
     //assert bytes < Value.MAX : "malloc size=0x"+Long.toHexString(bytes);
@@ -240,8 +257,10 @@ abstract public class MemoryManager {
       catch( OutOfMemoryError e ) {
         // Do NOT log OutOfMemory, it is expected and unavoidable and handled
         // in most cases by spilling to disk.
-        if( Cleaner.isDiskFull() )
+        if( Cleaner.isDiskFull() ) {
+          Log.err("Disk full, space left = " + Cleaner.availableDiskSpace());
           UDPRebooted.suicide(UDPRebooted.T.oom, H2O.SELF);
+        }
       }
       set_goals("OOM",true, bytes); // Low memory; block for swapping
     }

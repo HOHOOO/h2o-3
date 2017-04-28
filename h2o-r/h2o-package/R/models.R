@@ -1,7 +1,7 @@
 #'
 #' H2O Model Related Functions
 #'
-#' @importFrom graphics strwidth par legend
+#' @importFrom graphics strwidth par legend polygon
 
 
 # ------------------------------- Helper Functions --------------------------- #
@@ -95,7 +95,8 @@
 
 
 .h2o.modelJob <- function( algo, params, h2oRestApiVersion=.h2o.__REST_API_VERSION ) {
-  .eval.frame(params$training_frame)
+  if( !is.null(params$validation_frame) )
+    .eval.frame(params$training_frame)
   if( !is.null(params$validation_frame) )
     .eval.frame(params$validation_frame)
   job <- .h2o.startModelJob(algo, params, h2oRestApiVersion)
@@ -991,29 +992,45 @@ h2o.giniCoef <- function(object, train=FALSE, valid=FALSE, xval=FALSE) {
 }
 
 #'
-#' Retrieve the model coefficeints
+#' Return the coefficients that can be applied to the non-standardized data.
+#'
+#' Note: standardize = True by default. If set to False, then coef() returns the coefficients that are fit directly.
 #'
 #' @param object an \linkS4class{H2OModel} object.
 #' @export
 h2o.coef <- function(object) {
-  if( is(object, "H2OModel") ) {
-    coefs <- object@model$coefficients_table
-    if( is.null(coefs) ) stop("Can only extract coefficeints from GLMs")
-    return( coefs$coefficients )
-  } else stop("Can only extract coefficients from GLMs")
+  if (is(object, "H2OModel")) {
+    if (is.null(object@model$coefficients_table)) stop("Can only extract coefficeints from GLMs")
+    if (object@parameters$family != "multinomial") {
+      coefs <- object@model$coefficients_table$coefficients
+      names(coefs) <- object@model$coefficients_table$names
+    } else {
+      coefs <- object@model$coefficients_table
+    }
+    return(coefs)
+  } else {
+    stop("Can only extract coefficients from GLMs")
+  }  
 }
 
 #'
-#' Retrieve the normalized coefficients
+#' Return coefficients fitted on the standardized data (requires standardize = True, which is on by default). These coefficients can be used to evaluate variable importance.
 #'
 #' @param object an \linkS4class{H2OModel} object.
 #' @export
 h2o.coef_norm <- function(object) {
-  if( is(object, "H2OModel") ) {
-    coefs <- object@model$coefficients_table
-    if( is.null(coefs) ) stop("Can only extract coefficeints from GLMs")
-    return( coefs[,3] )  # the normalized coefs are 3rd column, (labels is 1st col)
-  } else stop("Can only extract coefficients from GLMs")
+  if (is(object, "H2OModel")) {
+    if (is.null(object@model$coefficients_table)) stop("Can only extract coefficeints from GLMs")
+    if (object@parameters$family != "multinomial") {
+      coefs <- object@model$coefficients_table$standardized_coefficients
+      names(coefs) <- object@model$coefficients_table$names
+    } else {
+      coefs <- object@model$coefficients_table
+    }
+    return(coefs)
+  } else {
+    stop("Can only extract coefficients from GLMs")
+  }
 }
 
 #' Retrieves Mean Squared Error Value
@@ -2257,7 +2274,7 @@ setMethod("h2o.confusionMatrix", "H2OModelMetrics", function(object, thresholds=
       tbl <- data.frame(col1,col2,col3,col4)
       colnames(tbl) <- cnames
       rownames(tbl) <- rnames
-      header <-  "Confusion Matrix"
+      header <-  "Confusion Matrix (vertical: actual; across: predicted) "
       if(t %in% metrics_thresholds) {
         m <- metrics_list[which(t == metrics_thresholds)]
         if( length(m) > 1) m <- m[[1]]
@@ -2854,18 +2871,19 @@ h2o.cross_validation_predictions <- function(object) {
 #' @param data An H2OFrame object used for scoring and constructing the plot.
 #' @param cols Feature(s) for which partial dependence will be calculated.
 #' @param destination_key An key reference to the created partial dependence tables in H2O.
-#' @param nbins Number of bins used.
+#' @param nbins Number of bins used. For categorical columns make sure the number of bins exceed the level count.
 #' @param plot A logical specifying whether to plot partial dependence table.
+#' @param plot_stddev A logical specifying whether to add std err to partial dependence plot.
 #' @return Plot and list of calculated mean response tables for each feature requested.
 #' @examples
 #' \donttest{
 #' library(h2o)
-#' h2o.init(nthreads = -1)
-#' prostate.path = system.file("extdata", "prostate.csv", package="h2o")
-#' prostate.hex = h2o.uploadFile(path = prostate.path, destination_frame = "prostate.hex")
+#' h2o.init()
+#' prostate.path <- system.file("extdata", "prostate.csv", package="h2o")
+#' prostate.hex <- h2o.uploadFile(path = prostate.path, destination_frame = "prostate.hex")
 #' prostate.hex[, "CAPSULE"] <- as.factor(prostate.hex[, "CAPSULE"] )
 #' prostate.hex[, "RACE"] <- as.factor(prostate.hex[,"RACE"] )
-#' prostate.gbm = h2o.gbm(x = c("AGE","RACE"),
+#' prostate.gbm <- h2o.gbm(x = c("AGE","RACE"),
 #'                        y = "CAPSULE",
 #'                        training_frame = prostate.hex,
 #'                        ntrees = 10,
@@ -2875,11 +2893,13 @@ h2o.cross_validation_predictions <- function(object) {
 #' }
 #' @export
 
-h2o.partialPlot <- function(object, data, cols, destination_key, nbins=20, plot = TRUE) {
+h2o.partialPlot <- function(object, data, cols, destination_key, nbins=20, plot = TRUE, plot_stddev = TRUE) {
   if(!is(object, "H2OModel")) stop("object must be an H2Omodel")
   if( is(object, "H2OMultinomialModel")) stop("object must be a regression model or binary classfier")
   if(!is(data, "H2OFrame")) stop("data must be H2OFrame")
   if(!is.numeric(nbins) | !(nbins > 0) ) stop("nbins must be a positive numeric")
+  if(!is.logical(plot)) stop("plot must be a logical value")
+  if(!is.logical(plot_stddev)) stop("plot must be a logical value")
   if(missing(cols)) cols =  object@parameters$x
 
   y = object@parameters$y
@@ -2898,19 +2918,90 @@ h2o.partialPlot <- function(object, data, cols, destination_key, nbins=20, plot 
   url <- gsub("/3/", "", res$dest$URL)
   res <- .h2o.__remoteSend(url, method = "GET", h2oRestApiVersion = 3)
 
+  ## Change feature names to the original supplied, the following is okay because order is preserved
+  pps <- res$partial_dependence_data
+  for(i in 1:length(pps)) if(!all(is.na( pps[[i]])) ) names(pps[[i]]) <- c(cols[i], "mean_response", "stddev_response")
 
   col_types = unlist(h2o.getTypes(data))
-  col_names = tolower( names(data))
+  col_names = names(data)
   pp.plot <- function(pp) {
-    type = col_types[which(col_names == tolower( names(pp)[1] ))]
-    if(type == "enum") pp[,1] = as.factor( pp[,1])
-    plot(pp, type = "l", main = attr(x,"description"))
+    if(!all(is.na(pp))) {
+      type = col_types[which(col_names == names(pp)[1])]
+      if(type == "enum") pp[,1] = as.factor( pp[,1])
+      
+      ## Added upper and lower std dev confidence bound
+      upper = pp[,2] + pp[,3]
+      lower = pp[,2] - pp[,3]
+      plot(pp[,1:2], type = "l", main = attr(x,"description"), ylim  = c(min(lower), max(upper)))
+      
+      ## Plot one standard deviation above and below the mean
+      if( plot_stddev) {
+        polygon(c(pp[,1], rev(pp[,1])), c(lower, rev(upper)), col = "grey75", border = F)
+        lines(pp[,1], pp[,2], lwd = 2)
+        lines(pp[,1], lower, col = "blue", lty = 2)
+        lines(pp[,1], upper, col = "blue", lty = 2) 
+      }
+    } else {
+      print("Partial Dependence not calculated--make sure nbins is as high as the level count")
+    }
   }
 
-  if(plot) lapply(res$partial_dependence_data, pp.plot)
-  if(length( res$partial_dependence_data) == 1) {
-    return(res$partial_dependence_data[[1]])
+  if(plot) lapply(pps, pp.plot)
+  if(length( pps) == 1) {
+    return(pps[[1]])
   } else {
-    return(res$partial_dependence_data)
+    return(pps)
   }
+}
+
+#' Feature Generation via H2O Deep Learning or DeepWater Model
+#'
+#' Extract the non-linear feature from an H2O data set using an H2O deep learning
+#' model.
+#' @param object An \linkS4class{H2OModel} object that represents the deep
+#' learning model to be used for feature extraction.
+#' @param data An H2OFrame object.
+#' @param layer Index (for DeepLearning, integer) or Name (for DeepWater, String) of the hidden layer to extract
+#' @return Returns an H2OFrame object with as many features as the
+#'         number of units in the hidden layer of the specified index.
+#' @seealso \code{link{h2o.deeplearning}} for making H2O Deep Learning models.
+#' @seealso \code{link{h2o.deepwater}} for making H2O DeepWater models.
+#' @examples
+#' \donttest{
+#' library(h2o)
+#' h2o.init()
+#' prosPath = system.file("extdata", "prostate.csv", package = "h2o")
+#' prostate.hex = h2o.importFile(path = prosPath)
+#' prostate.dl = h2o.deeplearning(x = 3:9, y = 2, training_frame = prostate.hex,
+#'                                hidden = c(100, 200), epochs = 5)
+#' prostate.deepfeatures_layer1 = h2o.deepfeatures(prostate.dl, prostate.hex, layer = 1)
+#' prostate.deepfeatures_layer2 = h2o.deepfeatures(prostate.dl, prostate.hex, layer = 2)
+#' head(prostate.deepfeatures_layer1)
+#' head(prostate.deepfeatures_layer2)
+#'
+#' #if (h2o.deepwater.available()) {
+#' #  prostate.dl = h2o.deepwater(x = 3:9, y = 2, backend="mxnet", training_frame = prostate.hex,
+#' #                              hidden = c(100, 200), epochs = 5)
+#' #  prostate.deepfeatures_layer1 =
+#' #    h2o.deepfeatures(prostate.dl, prostate.hex, layer = "fc1_w")
+#' #  prostate.deepfeatures_layer2 =
+#' #    h2o.deepfeatures(prostate.dl, prostate.hex, layer = "fc2_w")
+#' #  head(prostate.deepfeatures_layer1)
+#' #  head(prostate.deepfeatures_layer2)
+#' #}
+#' }
+#' @export
+h2o.deepfeatures <- function(object, data, layer) {
+  url <- paste0('Predictions/models/', object@model_id, '/frames/', h2o.getId(data))
+  if (is.null(layer)) layer <- 1
+  if (is.numeric(layer)) {
+    index = layer - 1
+    res <- .h2o.__remoteSend(url, method = "POST", deep_features_hidden_layer=index, h2oRestApiVersion = 4)
+  } else {
+    res <- .h2o.__remoteSend(url, method = "POST", deep_features_hidden_layer_name=layer, h2oRestApiVersion = 4)
+  }
+  job_key <- res$key$name
+  dest_key <- res$dest$name
+  .h2o.__waitOnJob(job_key)
+  h2o.getFrame(dest_key)
 }

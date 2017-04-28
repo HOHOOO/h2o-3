@@ -91,6 +91,8 @@ public abstract class GLMTask  {
     }
     @Override public void reduce(GLMResDevTask gt) {_nobs += gt._nobs; _resDev += gt._resDev; _likelihood += gt._likelihood;}
     public double avgDev(){return _resDev/_nobs;}
+    public double dev(){return _resDev;}
+
   }
 
   static class GLMResDevTaskMultinomial extends FrameTask2<GLMResDevTaskMultinomial> {
@@ -127,6 +129,7 @@ public abstract class GLMTask  {
     @Override public void reduce(GLMResDevTaskMultinomial gt) {_nobs += gt._nobs; _likelihood += gt._likelihood;}
 
     public double avgDev(){return _likelihood*2/_nobs;}
+    public double dev(){return _likelihood*2;}
   }
 
  static class WeightedSDTask extends MRTask<WeightedSDTask> {
@@ -149,7 +152,7 @@ public abstract class GLMTask  {
      int [] ids = MemoryManager.malloc4(chks[0]._len);
      for(int c = 0; c < _mean.length; ++c){
        double mu = _mean[c];
-       int n = chks[c].asSparseDoubles(vals,ids);
+       int n = chks[c].getSparseDoubles(vals,ids);
        double s = 0;
        for(int i = 0; i < n; ++i) {
          double d = vals[i];
@@ -185,6 +188,7 @@ public abstract class GLMTask  {
 
 
    private double [] _predictorSDs;
+   private final boolean _expandedResponse; // true iff family == multinomial and response has been maually expanded into binary columns
 
    public double [] predictorMeans(){return _basicStats.mean();}
    public double [] predictorSDs(){
@@ -197,7 +201,7 @@ public abstract class GLMTask  {
      return _basicStatsResponse.sigma();
    }
 
-   public YMUTask(DataInfo dinfo, int nclasses, boolean computeWeightedMeanSigmaResponse, boolean skipNAs, boolean haveResponse) {
+   public YMUTask(DataInfo dinfo, int nclasses, boolean computeWeightedMeanSigmaResponse, boolean skipNAs, boolean haveResponse, boolean expandedResponse) {
      _nums = dinfo._nums;
      _numOff = dinfo._cats;
      _responseId = haveResponse ? dinfo.responseChunkId(0) : -1;
@@ -206,6 +210,7 @@ public abstract class GLMTask  {
      _nClasses = nclasses;
      _computeWeightedMeanSigmaResponse = computeWeightedMeanSigmaResponse;
      _skipNAs = skipNAs;
+     _expandedResponse = _nClasses == 1 || expandedResponse;
    }
 
    @Override public void setupLocal(){}
@@ -224,7 +229,7 @@ public abstract class GLMTask  {
        for (int i = 0; i < chunks.length; ++i) {
          int n = vals.length;
          if(chunks[i].isSparseZero())
-           n = chunks[i].asSparseDoubles(vals,ids);
+           n = chunks[i].getSparseDoubles(vals,ids);
          else
           chunks[i].getDoubles(vals,0,n);
          for (int r = 0; r < n; ++r) {
@@ -270,8 +275,17 @@ public abstract class GLMTask  {
          continue;
        if(_computeWeightedMeanSigmaResponse) {
          //FIXME: Add support for subtracting offset from response
-         for(int i = 0; i < _nClasses; ++i)
-           numsResponse[i] = chunks[chunks.length-_nClasses+i].atd(r);
+         if(_expandedResponse) {
+           for (int i = 0; i < _nClasses; ++i)
+             numsResponse[i] = chunks[chunks.length - _nClasses + i].atd(r);
+         } else {
+           Arrays.fill(numsResponse,0);
+           double d = response.atd(r);
+           if(Double.isNaN(d))
+             Arrays.fill(numsResponse,Double.NaN);
+           else
+             numsResponse[(int)d] = 1;
+         }
          _basicStatsResponse.add(numsResponse,w);
        }
        double d = response.atd(r);
@@ -473,13 +487,13 @@ public abstract class GLMTask  {
       for(int cid = 0; cid < _dinfo._cats; ++cid){
         Chunk c = chks[cid];
         if(c.isSparseZero()) {
-          int nvals = c.asSparseDoubles(vals,ids,_dinfo.catNAFill(cid));
+          int nvals = c.getSparseDoubles(vals,ids,-1);
           for(int i = 0; i < nvals; ++i){
             int id = _dinfo.getCategoricalId(cid,(int)vals[i]);
             if(id >=0) etas[ids[i]] += _beta[id];
           }
         } else {
-          c.getIntegers(ids, 0, c._len,_dinfo.catNAFill(cid));
+          c.getIntegers(ids, 0, c._len,-1);
           for(int i = 0; i < ids.length; ++i){
             int id = _dinfo.getCategoricalId(cid,ids[i]);
             if(id >=0) etas[i] += _beta[id];
@@ -493,15 +507,15 @@ public abstract class GLMTask  {
       for(int cid = 0; cid < _dinfo._cats; ++cid){
         Chunk c = chks[cid];
         if(c.isSparseZero()) {
-          int nvals = c.asSparseDoubles(vals,ids,_dinfo.catNAFill(cid));
+          int nvals = c.getSparseDoubles(vals,ids,-1);
           for(int i = 0; i < nvals; ++i){
             int id = _dinfo.getCategoricalId(cid,(int)vals[i]);
             if(id >=0) _gradient[id] += etas[ids[i]];
           }
         } else {
-          c.getIntegers(ids, 0, c._len,_dinfo.catNAFill(cid));
+          c.getIntegers(ids, 0, c._len,-1);
           for(int i = 0; i < ids.length; ++i){
-            int id = _dinfo.getCategoricalId(cid,(int)ids[i]);
+            int id = _dinfo.getCategoricalId(cid,ids[i]);
             if(id >=0) _gradient[id] += etas[i];
           }
         }
@@ -517,11 +531,11 @@ public abstract class GLMTask  {
         Chunk c = chks[cid+_dinfo._cats];
         double b = scale*_beta[numOff+cid];
         if(c.isSparseZero()){
-          int nvals = c.asSparseDoubles(vals,ids,NA);
+          int nvals = c.getSparseDoubles(vals,ids,NA);
           for(int i = 0; i < nvals; ++i)
             etas[ids[i]] += vals[i] * b;
         } else if(c.isSparseNA()){
-          int nvals = c.asSparseDoubles(vals,ids,NA);
+          int nvals = c.getSparseDoubles(vals,ids,NA);
           for(int i = 0; i < nvals; ++i)
             etas[ids[i]] += (vals[i] - off) * b;
         } else {
@@ -540,14 +554,14 @@ public abstract class GLMTask  {
         double scale = _dinfo._normMul == null?1:_dinfo._normMul[cid];
         if(c.isSparseZero()){
           double g = 0;
-          int nVals = c.asSparseDoubles(vals,ids,NA);
+          int nVals = c.getSparseDoubles(vals,ids,NA);
           for(int i = 0; i < nVals; ++i)
             g += vals[i]*scale*etas[ids[i]];
           _gradient[numOff+cid] = g;
         } else if(c.isSparseNA()){
           double off = _dinfo._normSub == null?0:_dinfo._normSub[cid];
           double g = 0;
-          int nVals = c.asSparseDoubles(vals,ids,NA);
+          int nVals = c.getSparseDoubles(vals,ids,NA);
           for(int i = 0; i < nVals; ++i)
             g += (vals[i]-off)*scale*etas[ids[i]];
           _gradient[numOff+cid] = g;
@@ -659,6 +673,25 @@ public abstract class GLMTask  {
     }
   }
 
+  static class GLMQuasiBinomialGradientTask extends GLMGradientTask {
+    private final GLMWeightsFun _glmf;
+    public GLMQuasiBinomialGradientTask(Key jobKey, DataInfo dinfo, GLMParameters parms, double lambda, double[] beta) {
+      super(jobKey, dinfo, parms._obj_reg, lambda, beta);
+      _glmf = new GLMWeightsFun(parms);
+    }
+    @Override protected void computeGradientMultipliers(double [] es, double [] ys, double [] ws){
+      double l = 0;
+      for(int i = 0; i < es.length; ++i){
+        double p = _glmf.linkInv(es[i]);
+        if(p == 0) p = 1e-15;
+        if(p == 1) p = 1 - 1e-15;
+        es[i] = -ws[i]*(ys[i]-p);
+        l += ys[i]*Math.log(p) + (1-ys[i])*Math.log(1-p);
+      }
+      _likelihood = -l;
+    }
+  }
+
 
   static class GLMBinomialGradientTask extends GLMGradientTask {
     public GLMBinomialGradientTask(Key jobKey, DataInfo dinfo, GLMParameters parms, double lambda, double [] beta) {
@@ -670,10 +703,11 @@ public abstract class GLMTask  {
     protected void computeGradientMultipliers(double[] es, double[] ys, double[] ws) {
       for(int i = 0; i < es.length; ++i) {
         if(Double.isNaN(ys[i]) || ws[i] == 0){es[i] = 0; continue;}
-        double e = es[i], y = 1 - 2*ys[i], w = ws[i];
-        double d = 1 + Math.exp(y*e);
-        _likelihood += w*Math.log(d);
-        es[i] = w*y*(1-1.0/d);
+        double e = es[i], w = ws[i];
+        double yr = ys[i];
+        double ym = 1.0 / (Math.exp(-e) + 1.0);
+        if(ym != yr) _likelihood += w*((MathUtils.y_log_y(yr, ym)) + MathUtils.y_log_y(1 - yr, 1 - ym));
+        es[i] = ws[i] * (ym - yr);
       }
     }
   }
@@ -738,13 +772,13 @@ public abstract class GLMTask  {
       for(int cid = 0; cid < _dinfo._cats; ++cid){
         Chunk c = chks[cid];
         if(c.isSparseZero()) {
-          int nvals = c.asSparseDoubles(vals,ids,_dinfo.catNAFill(cid));
+          int nvals = c.getSparseDoubles(vals,ids,-1);
           for(int i = 0; i < nvals; ++i){
             int id = _dinfo.getCategoricalId(cid,(int)vals[i]);
             if(id >=0)ArrayUtils.add(etas[ids[i]],_beta[id]);
           }
         } else {
-          c.getIntegers(ids, 0, c._len,_dinfo.catNAFill(cid));
+          c.getIntegers(ids, 0, c._len,-1);
           for(int i = 0; i < ids.length; ++i){
             int id = _dinfo.getCategoricalId(cid,ids[i]);
             if(id >=0) ArrayUtils.add(etas[i],_beta[id]);
@@ -758,13 +792,13 @@ public abstract class GLMTask  {
       for(int cid = 0; cid < _dinfo._cats; ++cid){
         Chunk c = chks[cid];
         if(c.isSparseZero()) {
-          int nvals = c.asSparseDoubles(vals,ids,_dinfo.catNAFill(cid));
+          int nvals = c.getSparseDoubles(vals,ids,-1);
           for(int i = 0; i < nvals; ++i){
             int id = _dinfo.getCategoricalId(cid,(int)vals[i]);
             if(id >=0) ArrayUtils.add(_gradient[id],etas[ids[i]]);
           }
         } else {
-          c.getIntegers(ids, 0, c._len,_dinfo.catNAFill(cid));
+          c.getIntegers(ids, 0, c._len,-1);
           for(int i = 0; i < ids.length; ++i){
             int id = _dinfo.getCategoricalId(cid,ids[i]);
             if(id >=0) ArrayUtils.add(_gradient[id],etas[i]);
@@ -781,7 +815,7 @@ public abstract class GLMTask  {
         double NA = _dinfo._numMeans[cid];
         Chunk c = chks[cid+_dinfo._cats];
         if(c.isSparseZero() || c.isSparseNA()){
-          int nvals = c.asSparseDoubles(vals,ids,NA);
+          int nvals = c.getSparseDoubles(vals,ids,NA);
           for(int i = 0; i < nvals; ++i) {
             double d = vals[i]*scale;
             ArrayUtils.wadd(etas[ids[i]],b,d);
@@ -805,7 +839,7 @@ public abstract class GLMTask  {
         Chunk c = chks[cid+_dinfo._cats];
         double scale = _dinfo._normMul == null?1:_dinfo._normMul[cid];
         if(c.isSparseZero() || c.isSparseNA()){
-          int nVals = c.asSparseDoubles(vals,ids,NA);
+          int nVals = c.getSparseDoubles(vals,ids,NA);
           for (int i = 0; i < nVals; ++i)
             ArrayUtils.wadd(g,etas[ids[i]],vals[i] * scale);
         } else {
@@ -1305,6 +1339,7 @@ public abstract class GLMTask  {
         double mu = r.response(1);
         double eta = r.response(2);
         double d = mu*(1-mu);
+        if(d == 0) d = 1e-10;
         wz = r.weight * (eta * d + (y-mu));
         w  = r.weight * d;
       } else if(_beta != null) {

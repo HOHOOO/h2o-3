@@ -3,7 +3,9 @@ package hex.genmodel;
 import hex.genmodel.algos.deepwater.DeepwaterMojoReader;
 import hex.genmodel.algos.drf.DrfMojoReader;
 import hex.genmodel.algos.gbm.GbmMojoReader;
+import hex.genmodel.algos.glm.GlmMojoReader;
 import hex.genmodel.algos.glrm.GlrmMojoReader;
+import hex.genmodel.algos.word2vec.Word2VecMojoReader;
 
 import java.io.IOException;
 
@@ -12,9 +14,9 @@ import java.io.IOException;
  */
 public class ModelMojoFactory {
 
-  public static ModelMojoReader getMojoReader(String algo) throws IOException {
+  public static ModelMojoReader getMojoReader(String algo) {
     if (algo == null)
-      throw new IOException("Unable to find information about the model's algorithm.");
+      throw new IllegalArgumentException("Algorithm not specified.");
 
     switch (algo) {
       case "Distributed Random Forest":
@@ -31,8 +33,15 @@ public class ModelMojoFactory {
       case "Generalized Low Rank Model":
         return new GlrmMojoReader();
 
+      case "Generalized Linear Modeling":
+      case "Generalized Linear Model":
+        return new GlmMojoReader();
+
+      case "Word2Vec":
+        return new Word2VecMojoReader();
+
       default:
-        throw new IOException("Unsupported MOJO algorithm: " + algo);
+        throw new IllegalStateException("Unsupported MOJO algorithm: " + algo);
     }
   }
 

@@ -138,7 +138,7 @@ h2o.getModel <- function(model_id) {
   model_category <- json$output$model_category
   if (is.null(model_category))
     model_category <- "Unknown"
-  else if (!(model_category %in% c("Unknown", "Binomial", "Multinomial", "Regression", "Clustering", "AutoEncoder", "DimReduction")))
+  else if (!(model_category %in% c("Unknown", "Binomial", "Multinomial", "Regression", "Clustering", "AutoEncoder", "DimReduction", "WordEmbedding")))
     stop(paste0("model_category, \"", model_category,"\", missing in the output"))
   Class <- paste0("H2O", model_category, "Model")
   model <- json$output[!(names(json$output) %in% c("__meta", "names", "domains", "model_category"))]
@@ -215,24 +215,25 @@ h2o.getModel <- function(model_id) {
 #'             to console. The file name will be a compilable java file name.
 #' @param get_jar Whether to also download the h2o-genmodel.jar file needed to compile the POJO
 #' @param getjar (DEPRECATED) Whether to also download the h2o-genmodel.jar file needed to compile the POJO. This argument is now called `get_jar`.
+#' @param jar_name Custom name of genmodel jar.
 #' @return If path is NULL, then pretty print the POJO to the console.
 #'         Otherwise save it to the specified directory and return POJO file name.
 #' @examples
 #' \donttest{
 #' library(h2o)
-#' h <- h2o.init(nthreads=-1)
+#' h <- h2o.init()
 #' fr <- as.h2o(iris)
 #' my_model <- h2o.gbm(x=1:4, y=5, training_frame=fr)
 #'
 #' h2o.download_pojo(my_model)  # print the model to screen
-#' # h2o.download_pojo(my_model, getwd())  # save the POJO and jar file to the current working 
+#' # h2o.download_pojo(my_model, getwd())  # save the POJO and jar file to the current working
 #' #                                         directory, NOT RUN
 #' # h2o.download_pojo(my_model, getwd(), get_jar = FALSE )  # save only the POJO to the current
 #' #                                                           working directory, NOT RUN
 #' h2o.download_pojo(my_model, getwd())  # save to the current working directory
 #' }
 #' @export
-h2o.download_pojo <- function(model, path=NULL, getjar=NULL, get_jar=TRUE) {
+h2o.download_pojo <- function(model, path=NULL, getjar=NULL, get_jar=TRUE, jar_name="") {
 
   if(!is.null(path) && !(is.character(path))){
     stop("The 'path' variable should be of type character")
@@ -244,37 +245,42 @@ h2o.download_pojo <- function(model, path=NULL, getjar=NULL, get_jar=TRUE) {
     stop(paste0("'path',",path,", to save pojo cannot be found."))
   }
 
+  #Get model id
   model_id <- model@model_id
-  java <- .h2o.__remoteSend(method = "GET", paste0(.h2o.__MODELS, ".java/", model_id), raw=TRUE)
+
+  #Perform a safe (i.e. error-checked) HTTP GET request to an H2O cluster with POJO URL
+  java <- .h2o.doSafeGET(urlSuffix = paste0(.h2o.__MODELS, ".java/", model_id))
 
   # HACK: munge model._id so that it conforms to Java class name. For example, change K-means to K_means.
   # TODO: clients should extract Java class name from header.
   pojoname = gsub("[+\\-* !@#$%^&()={}\\[\\]|;:'\"<>,.?/]","_",model_id,perl=T)
-  
-  file.path <- paste0(path, "/", pojoname, ".java")
+
+  #Path to save POJO, if `path` is provided
+  file_path <- file.path(path, paste0(pojoname, ".java"))
+
   if( is.null(path) ){
-    cat(java)
+    cat(java) #Pretty print POJO
   } else {
-    write(java, file=file.path)
-      # getjar is now deprecated and the new arg name is get_jar
-      if (!is.null(getjar)) {
-        warning("The `getjar` argument is DEPRECATED; use `get_jar` instead as `getjar` will eventually be removed")
-        get_jar = getjar
-        getjar = NULL
-      }
-    if (get_jar) {
-      .__curlError = FALSE
-      .__curlErrorMessage = ""
-      url = .h2o.calcBaseURL(h2oRestApiVersion = .h2o.__REST_API_VERSION, urlSuffix = "h2o-genmodel.jar")
-      tmp = tryCatch(getBinaryURL(url = url,
-                          useragent = R.version.string),
-                   error = function(x) { .__curlError <<- TRUE; .__curlErrorMessage <<- x$message })
-      if (! .__curlError) {
-        jar.path <- paste0(path, "/h2o-genmodel.jar")
-        writeBin(tmp, jar.path, useBytes = TRUE)
-      }
+    write(java, file=file_path) #Write POJO to specified path
+  # getjar is now deprecated and the new arg name is get_jar
+  if (!is.null(getjar)) {
+    warning("The `getjar` argument is DEPRECATED; use `get_jar` instead as `getjar` will eventually be removed")
+    get_jar = getjar
+    getjar = NULL
+  }
+  if (get_jar) {
+    urlSuffix = "h2o-genmodel.jar"
+    #Build genmodel.jar file path
+    if(jar_name==""){
+      jar.path <- file.path(path, "h2o-genmodel.jar")
+    }else{
+      jar.path <- file.path(path, jar_name)
     }
-    return(paste0(pojoname,".java"))
+    #Perform a safe (i.e. error-checked) HTTP GET request to an H2O cluster with genmodel.jar URL
+    #and write to jar.path.
+    writeBin(.h2o.doSafeGET(urlSuffix = urlSuffix, binary = TRUE), jar.path, useBytes = TRUE)
+  }
+  return(paste0(pojoname,".java"))
   }
 }
 
@@ -284,18 +290,19 @@ h2o.download_pojo <- function(model, path=NULL, getjar=NULL, get_jar=TRUE) {
 #' @param model An H2OModel
 #' @param path The path where MOJO file should be saved. Saved to current directory by default.
 #' @param get_genmodel_jar If TRUE, then also download h2o-genmodel.jar and store it in folder ``path``.
+#' @param genmodel_name Custom name of genmodel jar.
 #' @return Name of the MOJO file written to the path.
 #'
 #' @examples
 #' \donttest{
 #' library(h2o)
-#' h <- h2o.init(nthreads=-1)
+#' h <- h2o.init()
 #' fr <- as.h2o(iris)
 #' my_model <- h2o.gbm(x=1:4, y=5, training_frame=fr)
 #' h2o.download_mojo(my_model)  # save to the current working directory
 #' }
 #' @export
-h2o.download_mojo <- function(model, path=getwd(), get_genmodel_jar=FALSE) {
+h2o.download_mojo <- function(model, path=getwd(), get_genmodel_jar=FALSE, genmodel_name="") {
 
   if(!(is.character(path))){
     stop("The 'path' variable should be of type character")
@@ -304,35 +311,36 @@ h2o.download_mojo <- function(model, path=getwd(), get_genmodel_jar=FALSE) {
     stop("The 'get_genmodel_jar' variable should be of type logical/boolean")
   }
 
-  if(!(model@algorithm %in% c("drf","gbm","deepwater","glrm"))){
-    stop("MOJOs are currently supported for Distributed Random Forest, Gradient Boosting Method, Deep Water and GLRM models only.")
+  if(!(model@algorithm %in% c("drf","gbm","deepwater","glrm","glm","word2vec"))){
+    stop("MOJOs are currently supported for Distributed Random Forest, Gradient Boosting Method, Deep Water, GLM, GLRM and word2vec models only.")
   }
 
   if(!(file.exists(path))){
     stop(paste0("'path',",path,", to save MOJO file cannot be found."))
   }
 
+  #Get model id
   model_id <- model@model_id
-  .__curlError = FALSE
-  .__curlErrorMessage = ""
 
-  url = .h2o.calcBaseURL(h2oRestApiVersion = .h2o.__REST_API_VERSION, urlSuffix = paste0(.h2o.__MODELS,"/",model_id,"/mojo"))
-  tmp = tryCatch(getBinaryURL(url = url,
-                      useragent = R.version.string),
-               error = function(x) { .__curlError <<- TRUE; .__curlErrorMessage <<- x$message })
-  if (! .__curlError) {
-     mojo.path <- paste0(path,"/",model_id,".zip")
-     writeBin(tmp, mojo.path, useBytes = TRUE)
-  }
+  #Build URL for MOJO
+  urlSuffix <- paste0(.h2o.__MODELS,"/",URLencode(model_id),"/mojo")
+
+  #Build MOJO file path and download MOJO file & perform a safe (i.e. error-checked)
+  #HTTP GET request to an H2O cluster with MOJO URL
+  mojo.path <- file.path(path, paste0(model_id,".zip"))
+  writeBin(.h2o.doSafeGET(urlSuffix = urlSuffix, binary = TRUE), mojo.path, useBytes = TRUE)
+
   if (get_genmodel_jar) {
-    url = .h2o.calcBaseURL(h2oRestApiVersion = .h2o.__REST_API_VERSION, urlSuffix = "h2o-genmodel.jar")
-    tmp = tryCatch(getBinaryURL(url = url,
-                        useragent = R.version.string),
-                 error = function(x) { .__curlError <<- TRUE; .__curlErrorMessage <<- x$message })
-    if (! .__curlError) {
-      jar.path <- paste0(path, "/h2o-genmodel.jar")
-      writeBin(tmp, jar.path, useBytes = TRUE)
+    urlSuffix = "h2o-genmodel.jar"
+    #Build genmodel.jar file path
+    if(genmodel_name==""){
+      jar.path <- file.path(path, "h2o-genmodel.jar")
+    }else{
+      jar.path <- file.path(path, genmodel_name)
     }
+    #Perform a safe (i.e. error-checked) HTTP GET request to an H2O cluster with genmodel.jar URL
+    #and write to jar.path.
+    writeBin(.h2o.doSafeGET(urlSuffix = urlSuffix, binary = TRUE), jar.path, useBytes = TRUE)
   }
   return(paste0(model_id,".zip"))
 }

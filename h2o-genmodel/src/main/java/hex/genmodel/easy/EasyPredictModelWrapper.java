@@ -3,6 +3,8 @@ package hex.genmodel.easy;
 import hex.ModelCategory;
 import hex.genmodel.GenModel;
 import hex.genmodel.algos.deepwater.DeepwaterMojoModel;
+import hex.genmodel.algos.word2vec.Word2VecMojoModel;
+import hex.genmodel.algos.word2vec.WordEmbeddingModel;
 import hex.genmodel.easy.exception.PredictException;
 import hex.genmodel.easy.exception.PredictNumberFormatException;
 import hex.genmodel.easy.exception.PredictUnknownCategoricalLevelException;
@@ -56,8 +58,8 @@ public class EasyPredictModelWrapper implements java.io.Serializable {
   private final HashMap<String, Integer> modelColumnNameToIndexMap;
   private final HashMap<Integer, HashMap<String, Integer>> domainMap;
 
-  // These private members are configured by setConvertUnknownCategoricalLevelsToNa().
   private final boolean convertUnknownCategoricalLevelsToNa;
+  private final boolean convertInvalidNumbersToNa;
   private final ConcurrentHashMap<String,AtomicLong> unknownCategoricalLevelsSeenPerColumn;
 
   /**
@@ -66,6 +68,7 @@ public class EasyPredictModelWrapper implements java.io.Serializable {
   public static class Config {
     private GenModel model;
     private boolean convertUnknownCategoricalLevelsToNa = false;
+    private boolean convertInvalidNumbersToNa = false;
 
     /**
      * Specify model object to wrap.
@@ -98,6 +101,22 @@ public class EasyPredictModelWrapper implements java.io.Serializable {
      * @return Setting for unknown categorical levels handling
      */
     public boolean getConvertUnknownCategoricalLevelsToNa() { return convertUnknownCategoricalLevelsToNa; }
+
+    /**
+     * Specify the default action when a string value cannot be converted to
+     * a number.
+     *
+     * @param value if true, then an N/A value will be produced, if false an
+     *              exception will be thrown.
+     */
+    public Config setConvertInvalidNumbersToNa(boolean value) {
+      convertInvalidNumbersToNa = value;
+      return this;
+    }
+
+    public boolean getConvertInvalidNumbersToNa() {
+      return convertInvalidNumbersToNa;
+    }
   }
 
   /**
@@ -118,6 +137,7 @@ public class EasyPredictModelWrapper implements java.io.Serializable {
     // How to handle unknown categorical levels.
     unknownCategoricalLevelsSeenPerColumn = new ConcurrentHashMap<>();
     convertUnknownCategoricalLevelsToNa = config.getConvertUnknownCategoricalLevelsToNa();
+    convertInvalidNumbersToNa = config.getConvertInvalidNumbersToNa();
     setupConvertUnknownCategoricalLevelsToNa();
 
     // Create map of input variable domain information.
@@ -203,6 +223,8 @@ public class EasyPredictModelWrapper implements java.io.Serializable {
         return predictRegression(data);
       case DimReduction:
         return predictDimReduction(data);
+      case WordEmbedding:
+        return predictWord2Vec(data);
 
       case Unknown:
         throw new PredictException("Unknown model category");
@@ -237,6 +259,35 @@ public class EasyPredictModelWrapper implements java.io.Serializable {
 
     DimReductionModelPrediction p = new DimReductionModelPrediction();
     p.dimensions = preds;
+
+    return p;
+
+  }
+  /**
+   * Lookup word embeddings for a given word (or set of words).
+   * @param data RawData structure, every key with a String value will be translated to an embedding
+   * @return The prediction
+   * @throws PredictException if model is not a WordEmbedding model
+   */
+  public Word2VecPrediction predictWord2Vec(RowData data) throws PredictException {
+    validateModelCategory(ModelCategory.WordEmbedding);
+
+    if (! (m instanceof WordEmbeddingModel))
+      throw new PredictException("Model is not of the expected type, class = " + m.getClass().getSimpleName());
+    final WordEmbeddingModel weModel = (WordEmbeddingModel) m;
+    final int vecSize = weModel.getVecSize();
+
+    HashMap<String, float[]> embeddings = new HashMap<>(data.size());
+    for (String wordKey : data.keySet()) {
+      Object value = data.get(wordKey);
+      if (value instanceof String) {
+        String word = (String) value;
+        embeddings.put(wordKey, weModel.transform0(word, new float[vecSize]));
+      }
+    }
+
+    Word2VecPrediction p = new Word2VecPrediction();
+    p.wordEmbeddings = embeddings;
 
     return p;
 
@@ -446,25 +497,25 @@ public class EasyPredictModelWrapper implements java.io.Serializable {
         if (o instanceof String) {
           String s = ((String) o).trim();
           // Url to an image given
-          boolean isURL = s.matches("^(https?|ftp|file)://[-a-zA-Z0-9+&@#/%?=~_|!:,.;]*[-a-zA-Z0-9+&@#/%=~_|]");
           if (isImage) {
+            boolean isURL = s.matches("^(https?|ftp|file)://[-a-zA-Z0-9+&@#/%?=~_|!:,.;]*[-a-zA-Z0-9+&@#/%=~_|]");
             try {
-              if (isURL) img = ImageIO.read(new URL(s));
-              else       img = ImageIO.read(new File(s));
+              img = isURL? ImageIO.read(new URL(s)) : ImageIO.read(new File(s));
             }
             catch (IOException e) {
               throw new PredictException("Couldn't read image from " + s);
             }
           } else if (isText) {
             // TODO: use model-specific vectorization of text
-            throw new IllegalArgumentException("MOJO scoring for text classification is not yet implemented.");
+            throw new PredictException("MOJO scoring for text classification is not yet implemented.");
           }
           else {
             // numeric
             try {
               value = Double.parseDouble(s);
             } catch(NumberFormatException nfe) {
-              throw new PredictNumberFormatException("Unable to parse value: " + s + ", from column: "+ dataColumnName + ", as Double; " + nfe.getMessage());
+              if (!convertInvalidNumbersToNa)
+                throw new PredictNumberFormatException("Unable to parse value: " + s + ", from column: "+ dataColumnName + ", as Double; " + nfe.getMessage());
             }
           }
         } else if (o instanceof Double) {

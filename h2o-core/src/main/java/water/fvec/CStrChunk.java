@@ -1,10 +1,11 @@
 package water.fvec;
 
 import water.*;
+import water.util.SetOfBytes;
 import water.util.UnsafeUtils;
 import water.parser.BufferedString;
 
-import java.util.HashMap;
+import java.util.Arrays;
 
 public class CStrChunk extends Chunk {
   static final int NA = -1;
@@ -13,25 +14,29 @@ public class CStrChunk extends Chunk {
   public boolean _isAllASCII = false;
 
   public CStrChunk() {}
-  public CStrChunk(int sslen, byte[] ss, int sparseLen, int idxLen, int[] strIdx, boolean isAllASCII) {
+  public CStrChunk(int sslen, byte[] ss, int sparseLen, int idxLen, int[] id, int[] is) {
     _start = -1;
-    _valstart = _OFF + (idxLen<<2);
-    _isAllASCII = isAllASCII;
-    set_len(idxLen);
+    _valstart = idx(idxLen);
+    _len = idxLen;
+    _mem = MemoryManager.malloc1(_valstart + sslen, false);
+    UnsafeUtils.set4(_mem, 0, _valstart); // location of start of strings
 
-    _mem = MemoryManager.malloc1(CStrChunk._OFF + idxLen*4 + sslen, false);
-    UnsafeUtils.set4(_mem, 0, CStrChunk._OFF + idxLen * 4); // location of start of strings
-    if (_isAllASCII) UnsafeUtils.set1(_mem, 4, (byte)1); // use byte to store _isAllASCII
-    else UnsafeUtils.set1(_mem, 4, (byte)0);
-
-    for( int i = 0; i < sparseLen; ++i )
-      UnsafeUtils.set4(_mem, CStrChunk._OFF + 4*i, strIdx[i]);
-    for( int i = sparseLen; i < idxLen; ++i )  // set NAs
-      UnsafeUtils.set4(_mem, CStrChunk._OFF + 4*i, -1);
-    for( int i = 0; i < sslen; ++i )
-      _mem[CStrChunk._OFF + idxLen*4 + i] = ss[i];
+    Arrays.fill(_mem,_OFF,_valstart,(byte)-1); // Indicate All Is NA's
+    for( int i = 0; i < sparseLen; ++i ) // Copy the sparse indices
+      UnsafeUtils.set4(_mem, idx(id==null ? i : id[i]), is[i]);
+    UnsafeUtils.copyMemory(ss,0,_mem,_valstart,sslen);
+    _isAllASCII = true;
+    for(int i = _valstart; i < _mem.length; ++i) {
+      byte c = _mem[i];
+      if ((c & 0x80) == 128) { //value beyond std ASCII
+        _isAllASCII = false;
+        break;
+      }
+    }
+    UnsafeUtils.set1(_mem, 4, (byte) (_isAllASCII ? 1 : 0)); // isAllASCII flag
   }
 
+  private int idx(int i) { return _OFF+(i<<2); }
   @Override public boolean setNA_impl(int idx) { return false; }
   @Override public boolean set_impl(int idx, float f) { if (Float.isNaN(f)) return false; else throw new IllegalArgumentException("Operation not allowed on string vector.");}
   @Override public boolean set_impl(int idx, double d) { if (Double.isNaN(d)) return false; else throw new IllegalArgumentException("Operation not allowed on string vector.");}
@@ -39,38 +44,50 @@ public class CStrChunk extends Chunk {
   @Override public boolean set_impl(int idx, String str) { return false; }
 
   @Override public boolean isNA_impl(int idx) {
-    int off = UnsafeUtils.get4(_mem,(idx<<2)+_OFF);
+    int off = intAt(idx);
     return off == NA;
   }
 
+  public int intAt(int i) { return UnsafeUtils.get4(_mem, idx(i)); }
+  public byte byteAt(int i) { return _mem[_valstart+i]; }
+  public int lengthAtOffset(int off) {
+    int len = 0;
+    while (byteAt(off + len) != 0) len++;
+    return len;
+  }
+  
   @Override public long at8_impl(int idx) { throw new IllegalArgumentException("Operation not allowed on string vector.");}
   @Override public double atd_impl(int idx) { throw new IllegalArgumentException("Operation not allowed on string vector.");}
   @Override public BufferedString atStr_impl(BufferedString bStr, int idx) {
-    int off = UnsafeUtils.get4(_mem,(idx<<2)+_OFF);
+    int off = intAt(idx);
     if( off == NA ) return null;
-    int len = 0;
-    while( _mem[_valstart+off+len] != 0 ) len++;
+    int len = lengthAtOffset(off);
+    assert len >= 0 : getClass().getSimpleName() + ".atStr_impl: len=" + len + ", idx=" + idx + ", off=" + off;
     return bStr.set(_mem,_valstart+off,len);
   }
 
   @Override protected final void initFromBytes () {
     _start = -1;  _cidx = -1;
-    _valstart = UnsafeUtils.get4(_mem,0);
+    _valstart = UnsafeUtils.get4(_mem, 0);
     byte b = UnsafeUtils.get1(_mem,4);
     _isAllASCII = b != 0;
     set_len((_valstart-_OFF)>>2);
   }
-  @Override public NewChunk inflate_impl(NewChunk nc) {
-    nc.set_sparseLen(nc.set_len(_len));
-    nc._isAllASCII = _isAllASCII;
-    int [] ids = nc.alloc_str_indices(_len);
-    for( int i = 0; i < _len; i++ )
-      ids[i] = UnsafeUtils.get4(_mem,(i<<2)+_OFF);
-    nc._sslen = _mem.length - _valstart;
-    nc._ss = MemoryManager.malloc1(nc._sslen);
-    System.arraycopy(_mem,_valstart,nc._ss,0,nc._sslen);
+
+  @Override public ChunkVisitor processRows(ChunkVisitor nc, int from, int to){
+    BufferedString bs = new BufferedString();
+    for(int i = from; i < to; i++)
+      nc.addValue(atStr(bs,i));
     return nc;
   }
+  @Override public ChunkVisitor processRows(ChunkVisitor nc, int... rows){
+    BufferedString bs = new BufferedString();
+    for(int i:rows)
+      nc.addValue(atStr(bs,i));
+    return nc;
+  }
+
+
 
   /**
    * Optimized toLower() method to operate across the entire CStrChunk buffer in one pass.
@@ -83,7 +100,7 @@ public class CStrChunk extends Chunk {
    */
   public NewChunk asciiToLower(NewChunk nc) {
     // copy existing data
-    nc = this.inflate_impl(nc);
+    nc = this.extractRows(nc, 0,_len);
     //update offsets and byte array
     for(int i= 0; i < nc._sslen; i++) {
       if (nc._ss[i] > 0x40 && nc._ss[i] < 0x5B) // check for capital letter
@@ -104,7 +121,7 @@ public class CStrChunk extends Chunk {
    */
   public NewChunk asciiToUpper(NewChunk nc) {
     // copy existing data
-    nc = this.inflate_impl(nc);
+    nc = this.extractRows(nc, 0,_len);
     //update offsets and byte array
     for(int i= 0; i < nc._sslen; i++) {
       if (nc._ss[i] > 0x60 && nc._ss[i] < 0x7B) // check for capital letter
@@ -127,11 +144,11 @@ public class CStrChunk extends Chunk {
    */
   public NewChunk asciiTrim(NewChunk nc) {
     // copy existing data
-    nc = this.inflate_impl(nc);
+    nc = this.extractRows(nc, 0,_len);
     //update offsets and byte array
     for(int i=0; i < _len; i++) {
       int j = 0;
-      int off = UnsafeUtils.get4(_mem,(i<<2)+_OFF);
+      int off = UnsafeUtils.get4(_mem,idx(i));
       if (off != NA) {
         //UTF chars will appear as negative values. In Java spec, space is any char 0x20 and lower
         while( _mem[_valstart+off+j] > 0 && _mem[_valstart+off+j] < 0x21) j++;
@@ -159,11 +176,10 @@ public class CStrChunk extends Chunk {
    */
   public NewChunk asciiSubstring(NewChunk nc, int startIndex, int endIndex) {
     // copy existing data
-    nc = this.inflate_impl(nc);
-    
+    nc = this.extractRows(nc, 0,_len);
     //update offsets and byte array
     for (int i = 0; i < _len; i++) {
-      int off = UnsafeUtils.get4(_mem, (i << 2) + _OFF);
+      int off = UnsafeUtils.get4(_mem, idx(i));
       if (off != NA) {
         int len = 0;
         while (_mem[_valstart + off + len] != 0) len++; //Find length
@@ -190,7 +206,7 @@ public class CStrChunk extends Chunk {
     nc.alloc_exponent(_len); // sadly, a waste
     // fill in lengths
     for(int i=0; i < _len; i++) {
-      int off = UnsafeUtils.get4(_mem,(i<<2)+_OFF);
+      int off = UnsafeUtils.get4(_mem,idx(i));
       int len = 0;
       if (off != NA) {
         while (_mem[_valstart + off + len] != 0) len++;
@@ -203,27 +219,30 @@ public class CStrChunk extends Chunk {
   public NewChunk asciiEntropy(NewChunk nc) {
     nc.alloc_doubles(_len);
     for (int i = 0; i < _len; i++) {
-      int off = UnsafeUtils.get4(_mem, (i << 2) + _OFF);
-      if (off != NA) {
-        HashMap<Byte, Integer> freq = new HashMap<>();
-        int j = 0;
-        while (_mem[_valstart + off + j] != 0)  {
-          Integer count = freq.get(_mem[_valstart + off + j]);
-          if (count == null) freq.put(_mem[_valstart + off + j], 1);
-          else freq.put(_mem[_valstart + off + j], count+1);
-          j++;
-        }
-        double sume = 0;
-        int N = j;
-        double n;
-        for (Byte b : freq.keySet()) {
-          n = freq.get(b);
-          sume += -n/N * Math.log(n/N) / Math.log(2);
-        }
-        nc.addNum(sume);
-      } else nc.addNA();
+      double entropy = entropyAt(i);
+      if (Double.isNaN(entropy)) nc.addNA();
+      else                       nc.addNum(entropy);
     }
     return nc;
+  }
+
+  double entropyAt(int i) {
+    int off = intAt(i);
+    if (off == NA) return Double.NaN;
+    int[] frq = new int[256];
+    int len = lengthAtOffset(off);
+    for (int j = 0; j < len; j++) {
+      frq[0xff & byteAt(off + j)]++;
+    }
+    double sum = 0;
+    for (int b = 0; b < 256; b++) {
+      int f = frq[b];
+      if (f > 0) {
+        double x = (double)f / len;
+        sum += x * Math.log(x);
+      }
+    }
+    return - sum / Math.log(2);
   }
 
   /**
@@ -232,54 +251,35 @@ public class CStrChunk extends Chunk {
    * NewChunk is the same size as the original, despite trimming.
    *
    * @param nc NewChunk to be filled with strip version of strings in this chunk
-   * @param set chars to strip, treated as ASCII
+   * @param chars chars to strip, treated as ASCII
    * @return Filled NewChunk
    */
-  public NewChunk asciiLStrip(NewChunk nc, String set) {
-    // copy existing data
-    nc = this.inflate_impl(nc);
+  public NewChunk asciiLStrip(NewChunk nc, String chars) {
+    SetOfBytes set = new SetOfBytes(chars);
     //update offsets and byte array
     for(int i=0; i < _len; i++) {
-      int j = 0;
-      int off = UnsafeUtils.get4(_mem,(i<<2)+_OFF);
+      int off = intAt(i);
       if (off != NA) {
-        while( intersects(_mem[_valstart + off + j], set) ) j++;
-        if (j > 0) nc.set_is(i,off + j);
-      }
+        while (set.contains(byteAt(off))) off++;
+        int len = lengthAtOffset(off);
+        nc.addStr(new BufferedString(_mem, _valstart+off, len));
+      } else nc.addNA();
     }
     return nc;
   }
 
-  public NewChunk asciiRStrip(NewChunk nc, String set) {
-    // copy existing data
-    nc = this.inflate_impl(nc);
+  public NewChunk asciiRStrip(NewChunk nc, String chars) {
+    SetOfBytes set = new SetOfBytes(chars);
     //update offsets and byte array
     for(int i=0; i < _len; i++) {
-      int j = 0;
-      int off = UnsafeUtils.get4(_mem,(i<<2)+_OFF);
+      int off = intAt(i);
       if (off != NA) {
-        while( _mem[_valstart+off+j] != 0 ) j++; //Find end
-        j--;
-        while( intersects(_mem[_valstart + off + j], set) ) { // March back while char in set
-          nc._ss[off+j] = 0; //Set new end
-          j--;
-        }
-      }
+        int pos = off + lengthAtOffset(off);
+        while (pos --> off && set.contains(byteAt(pos)));
+        nc.addStr(new BufferedString(_mem, _valstart+off, pos - off + 1));
+      } else nc.addNA();
     }
     return nc;
-  }
-
-  /**
-   * Does c intersect w/ set?
-   * @param c char to look for
-   * @param set set to look in
-   * @return true if c is in set
-   */
-  private boolean intersects(byte c, String set) {
-    for (int i=0; i < set.length(); i++)
-      if (c == set.charAt(i))
-        return true;
-    return false;
   }
 }
 

@@ -69,7 +69,7 @@ public class GLM extends ModelBuilder<GLMModel,GLMParameters,GLMOutput> {
   }
 
   @Override public boolean havePojo() { return true; }
-  @Override public boolean haveMojo() { return false; }
+  @Override public boolean haveMojo() { return true; }
 
   private double _lambdaCVEstimate = Double.NaN; // lambda cross-validation estimate
   private boolean _doInit = true;  // flag setting whether or not to run init
@@ -108,7 +108,11 @@ public class GLM extends ModelBuilder<GLMModel,GLMParameters,GLMOutput> {
       _xval_test_deviances = new double[_parms._lambda.length];
       _xval_test_sd = new double [_parms._lambda.length];
       double bestTestDev = Double.POSITIVE_INFINITY;
-      int lmin_max = _parms._lambda.length;
+      int lmin_max = 0;
+      for (int i = 0; i < cvModelBuilders.length; ++i) {
+        GLM g = (GLM) cvModelBuilders[i];
+        lmin_max = Math.max(lmin_max,g._model._output._best_lambda_idx);
+      }
       int lidx = 0;
       int bestId = 0;
       int cnt = 0;
@@ -140,13 +144,19 @@ public class GLM extends ModelBuilder<GLMModel,GLMParameters,GLMOutput> {
         }
         // early stopping - no reason to move further if we're overfitting
         if(testDevAvg > bestTestDev && ++cnt == 3) {
-          lmin_max = lidx+1;
+          lmin_max = lidx;
           break;
         }
       }
-      _parms._lambda = Arrays.copyOf(_parms._lambda,lmin_max);
-      _xval_test_deviances = Arrays.copyOf(_xval_test_deviances, lmin_max);
-      _xval_test_sd = Arrays.copyOf(_xval_test_sd, lmin_max);
+      for (int i = 0; i < cvModelBuilders.length; ++i) {
+        GLM g = (GLM) cvModelBuilders[i];
+        if(g._toRemove != null)
+          for(Key k:g._toRemove)
+            Keyed.remove(k);
+      }
+      _parms._lambda = Arrays.copyOf(_parms._lambda,lmin_max+1);
+      _xval_test_deviances = Arrays.copyOf(_xval_test_deviances, lmin_max+1);
+      _xval_test_sd = Arrays.copyOf(_xval_test_sd, lmin_max+1);
       for (int i = 0; i < cvModelBuilders.length; ++i) {
         GLM g = (GLM) cvModelBuilders[i];
         g._model._output.setSubmodelIdx(bestId);
@@ -319,11 +329,12 @@ public class GLM extends ModelBuilder<GLMModel,GLMParameters,GLMOutput> {
       if (_parms._family == Family.multinomial) {
         _nullBeta = MemoryManager.malloc8d((_dinfo.fullN() + 1) * nclasses());
         int N = _dinfo.fullN() + 1;
-        for (int i = 0; i < nclasses(); ++i)
-          _nullBeta[_dinfo.fullN() + i * N] = Math.log(_state._ymu[i]);
+        if(_parms._intercept)
+          for (int i = 0; i < nclasses(); ++i)
+            _nullBeta[_dinfo.fullN() + i * N] = Math.log(_state._ymu[i]);
       } else {
         _nullBeta = MemoryManager.malloc8d(_dinfo.fullN() + 1);
-        if (_parms._intercept)
+        if (_parms._intercept && !(_parms._family == Family.quasibinomial))
           _nullBeta[_dinfo.fullN()] = new GLMModel.GLMWeightsFun(_parms).link(_state._ymu[0]);
         else
           _nullBeta[_dinfo.fullN()] = 0;
@@ -367,6 +378,9 @@ public class GLM extends ModelBuilder<GLMModel,GLMParameters,GLMOutput> {
         case tweedie:
           if (_nclass != 1) error("_family", H2O.technote(2, "Tweedie requires the response to be numeric."));
           break;
+        case quasibinomial:
+          if (_nclass != 1) error("_family", H2O.technote(2, "Quasi_binomial requires the response to be numeric."));
+          break;
         case gaussian:
 //          if (_nclass != 1) error("_family", H2O.technote(2, "Gaussian requires the response to be numeric."));
           break;
@@ -387,8 +401,6 @@ public class GLM extends ModelBuilder<GLMModel,GLMParameters,GLMOutput> {
       _t0 = System.currentTimeMillis();
       if (_parms._lambda_search || !_parms._intercept || _parms._lambda == null || _parms._lambda[0] > 0)
         _parms._use_all_factor_levels = true;
-      if (_parms._max_active_predictors == -1)
-        _parms._max_active_predictors = _parms._solver == Solver.IRLSM ? 7000 : 100000000;
       if (_parms._link == Link.family_default)
         _parms._link = _parms._family.defaultLink;
       _dinfo = new DataInfo(_train.clone(), _valid, 1, _parms._use_all_factor_levels || _parms._lambda_search, _parms._standardize ? DataInfo.TransformType.STANDARDIZE : DataInfo.TransformType.NONE, DataInfo.TransformType.NONE, _parms._missing_values_handling == MissingValuesHandling.Skip, _parms._missing_values_handling == MissingValuesHandling.MeanImputation, false, hasWeightCol(), hasOffsetCol(), hasFoldCol(), _parms._interactions);
@@ -414,7 +426,7 @@ public class GLM extends ModelBuilder<GLMModel,GLMParameters,GLMOutput> {
           _dinfo.setWeights(_generatedWeights = "__glm_gen_weights", wc);
         }
 
-        YMUTask ymt = new YMUTask(_dinfo, _parms._family == Family.multinomial?nclasses():1, setWeights, skippingRows,true).doAll(_dinfo._adaptedFrame);
+        YMUTask ymt = new YMUTask(_dinfo, _parms._family == Family.multinomial?nclasses():1, setWeights, skippingRows,true,false).doAll(_dinfo._adaptedFrame);
         if (ymt.wsum() == 0)
           throw new IllegalArgumentException("No rows left in the dataset after filtering out rows with missing values. Ignore columns with many NAs or impute your missing values prior to calling glm.");
         Log.info(LogMsg("using " + ymt.nobs() + " nobs out of " + _dinfo._adaptedFrame.numRows() + " total"));
@@ -424,6 +436,11 @@ public class GLM extends ModelBuilder<GLMModel,GLMParameters,GLMOutput> {
           _parms._obj_reg = 1.0 / ymt.wsum();
         if(!_parms._stdOverride)
           _dinfo.updateWeightedSigmaAndMean(ymt.predictorSDs(), ymt.predictorMeans());
+        if (_parms._family == Family.multinomial) {
+          _state._ymu = MemoryManager.malloc8d(_nclass);
+          for (int i = 0; i < _state._ymu.length; ++i)
+            _state._ymu[i] = _priorClassDist[i];//ymt.responseMeans()[i];
+        } else
         _state._ymu = _parms._intercept?ymt._yMu:new double[]{_parms.linkInv(0)};
       } else {
         _nobs = _train.numRows();
@@ -505,6 +522,13 @@ public class GLM extends ModelBuilder<GLMModel,GLMParameters,GLMOutput> {
 
   protected static final long WORK_TOTAL = 1000000;
 
+  transient Key [] _toRemove;
+
+  private Key[] removeLater(Key ...k){
+    _toRemove = _toRemove == null?k:ArrayUtils.append(_toRemove,k);
+    return k;
+  }
+
   @Override protected GLMDriver trainModelImpl() { return _driver = new GLMDriver(); }
 
   private final double lmax(double[] grad) {
@@ -517,10 +541,13 @@ public class GLM extends ModelBuilder<GLMModel,GLMParameters,GLMOutput> {
    */
   public final class GLMDriver extends Driver implements ProgressMonitor {
     private long _workPerIteration;
+    private transient double[][] _vcov;
 
 
     private void doCleanup() {
       try {
+        if(_parms._lambda_search && _parms._is_cv_model)
+          Scope.untrack(removeLater(_dinfo.getWeightsVec()._key));
         if(!_cv && _model!=null)
           _model.unlock(_job);
       } catch(Throwable t){
@@ -530,14 +557,40 @@ public class GLM extends ModelBuilder<GLMModel,GLMParameters,GLMOutput> {
     private transient Cholesky _chol;
     private transient L1Solver _lslvr;
 
+
+    int [] findZeros(double [] vals){
+      int [] res = new int[4];
+      int cnt = 0;
+      for(int i = 0; i < vals.length; ++i){
+        if(vals[i] == 0){
+          if(res.length == cnt)
+            res = Arrays.copyOf(res,res.length*2);
+          res[cnt++] = i;
+        }
+      }
+      return Arrays.copyOf(res,cnt);
+    }
     private double [] solveGram(Solver s, GLMIterationTask t) {
-      int [] zeros = t._gram.findZeroCols();
-      if(zeros.length > 0) {
-        t._gram.dropCols(zeros);
-        t._xy = ArrayUtils.removeIds(t._xy, zeros);
-        if(t._beta != null)
-          t._beta = ArrayUtils.removeIds(t._beta, zeros);
-        _state.removeCols(zeros);
+      // look for predictors which never appeared (can happen e.g. with weights or ignored NAs)
+      // never occuring columns must have gram[i] == 0 for all j AND XtY[i] == 0
+      if(_parms._family != Family.multinomial) { // don't do this for multinomial family - too many problems resizing the gradient
+        int[] zeros = t._gram.findZeroCols();
+        int falseZeros = 0;
+        for (int i = 0; i < zeros.length; i++) {
+          if (t._xy[zeros[i]] == 0)
+            zeros[i - falseZeros] = zeros[i];
+          else
+            falseZeros++;
+        }
+        zeros = Arrays.copyOf(zeros, zeros.length - falseZeros);
+        if (zeros.length > 0) {
+          _state.removeCols(zeros);
+          // no need to solve with zeros, remove them, solve and extend the result to original size (filling in zeros)
+          t._gram.dropCols(zeros);
+          t._xy = ArrayUtils.removeIds(t._xy, zeros);
+          if (t._beta != null)
+            t._beta = ArrayUtils.removeIds(t._beta, zeros);
+        }
       }
       t._gram.mul(_parms._obj_reg);
       ArrayUtils.mult(t._xy, _parms._obj_reg);
@@ -593,7 +646,7 @@ public class GLM extends ModelBuilder<GLMModel,GLMParameters,GLMOutput> {
       do {
         beta = beta.clone();
         for (int c = 0; c < _nclass; ++c) {
-          if (_state.activeDataMultinomial(c).fullN() == 0) continue;
+          boolean onlyIcpt = _state.activeDataMultinomial(c).fullN() == 0;
           _state.setActiveClass(c);
           LineSearchSolver ls = (_state.l1pen() == 0)
             ? new MoreThuente(_state.gslvrMultinomial(c), _state.betaMultinomial(c,beta), _state.ginfoMultinomial(c))
@@ -606,7 +659,7 @@ public class GLM extends ModelBuilder<GLMModel,GLMParameters,GLMOutput> {
           long t3 = System.currentTimeMillis();
           double[] betaCnd = solveGram(s,t);
           long t4 = System.currentTimeMillis();
-          if (!ls.evaluate(ArrayUtils.subtract(betaCnd, ls.getX(), betaCnd))) {
+          if (!onlyIcpt && !ls.evaluate(ArrayUtils.subtract(betaCnd, ls.getX(), betaCnd))) {
             Log.info(LogMsg("Ls failed " + ls));
             continue;
           }
@@ -654,7 +707,6 @@ public class GLM extends ModelBuilder<GLMModel,GLMParameters,GLMOutput> {
               ls = (_state.l1pen() == 0 && !_state.activeBC().hasBounds())
                  ? new MoreThuente(_state.gslvr(),_state.beta(), _state.ginfo())
                  : new SimpleBacktrackingLS(_state.gslvr(),_state.beta().clone(), _state.l1pen(), _state.ginfo());
-
             if (!ls.evaluate(ArrayUtils.subtract(betaCnd, ls.getX(), betaCnd))) {
               Log.info(LogMsg("Ls failed " + ls));
               return;
@@ -674,18 +726,16 @@ public class GLM extends ModelBuilder<GLMModel,GLMParameters,GLMOutput> {
 
     private void fitLBFGS() {
       double [] beta = _state.beta();
-      double lambda = _state.lambda();
       final double l1pen = _state.l1pen();
-      final double l2pen = _state.l2pen();
       GLMGradientSolver gslvr = _state.gslvr();
       GLMWeightsFun glmw = new GLMWeightsFun(_parms);
-      if (_parms._family == Family.multinomial) {
+      if (beta == null && _parms._family == Family.multinomial) {
         beta = MemoryManager.malloc8d((_state.activeData().fullN() + 1) * _nclass);
         int P = _state.activeData().fullN() + 1;
-        for (int i = 0; i < _nclass; ++i)
-          beta[i * P + P - 1] = glmw.link(_state._ymu[i]);
+        if(_parms._intercept)
+          for (int i = 0; i < _nclass; ++i)
+            beta[i * P + P - 1] = glmw.link(_state._ymu[i]);
       }
-
       if (beta == null) {
         beta = MemoryManager.malloc8d(_state.activeData().fullN() + 1);
         if (_parms._intercept)
@@ -737,7 +787,7 @@ public class GLM extends ModelBuilder<GLMModel,GLMParameters,GLMOutput> {
         _state._u = l1Solver._u;
         _state.updateState(beta,gslvr.getGradient(beta));
       } else {
-        if(_state._iter == 0)
+        if(!_parms._lambda_search && _state._iter == 0)
           updateProgress(false);
         Result r = lbfgs.solve(gslvr, beta, _state.ginfo(), new ProgressMonitor() {
           @Override
@@ -926,15 +976,30 @@ public class GLM extends ModelBuilder<GLMModel,GLMParameters,GLMOutput> {
         double se = 1;
         boolean seEst = false;
         double [] beta = _state.beta();
+
         if(_parms._family != Family.binomial && _parms._family != Family.poisson) {
           seEst = true;
           ComputeSETsk ct = new ComputeSETsk(null, _state.activeData(), _job._key, beta, _parms).doAll(_state.activeData()._adaptedFrame);
           se = ct._sumsqe / (_nobs - 1 - _state.activeData().fullN());
         }
         double [] zvalues = MemoryManager.malloc8d(_state.activeData().fullN()+1);
-        double [] gInvDiag = _chol.getInvDiag();
+        Cholesky chol = _chol;
+        if(_parms._standardize){ // compute non-standardized t(X)%*%W%*%X
+          DataInfo activeData = _state.activeData();
+          double [] beta_nostd = activeData.denormalizeBeta(beta);
+          DataInfo.TransformType transform = activeData._predictor_transform;
+          activeData.setPredictorTransform(DataInfo.TransformType.NONE);
+          Gram g = new GLMIterationTask(_job._key,activeData,new GLMWeightsFun(_parms),beta_nostd).doAll(activeData._adaptedFrame)._gram;
+          activeData.setPredictorTransform(transform); // just in case, restore the trasnform
+          g.mul(_parms._obj_reg);
+          chol = g.cholesky(null);
+          beta = beta_nostd;
+        }
+        double [][] inv = chol.getInv();
+        ArrayUtils.mult(inv,_parms._obj_reg*se);
+        _vcov = inv;
         for(int i = 0; i < zvalues.length; ++i)
-          zvalues[i] = beta[i]/Math.sqrt(_parms._obj_reg*gInvDiag[i]*se);
+          zvalues[i] = beta[i]/Math.sqrt(inv[i][i]);
         _model.setZValues(expandVec(zvalues,_state.activeData()._activeCols,_dinfo.fullN()+1,Double.NaN),se, seEst);
       }
     }
@@ -1023,7 +1088,7 @@ public class GLM extends ModelBuilder<GLMModel,GLMParameters,GLMOutput> {
       } else
         _workPerIteration = 1 + (WORK_TOTAL/_parms._max_iterations);
 
-      if(_parms._family == Family.multinomial && _parms._solver != Solver.L_BFGS && (_parms._solver != Solver.AUTO || defaultSolver() != Solver.L_BFGS) ) {
+      if(_parms._family == Family.multinomial && _parms._solver != Solver.L_BFGS ) {
         double [] nb = getNullBeta();
         double maxRow = ArrayUtils.maxValue(nb);
         double sumExp = 0;
@@ -1031,7 +1096,12 @@ public class GLM extends ModelBuilder<GLMModel,GLMParameters,GLMOutput> {
         int N = _dinfo.fullN()+1;
         for(int i = 1; i < _nclass; ++i)
           sumExp += Math.exp(nb[i*N + P] - maxRow);
-        _dinfo.addResponse(new String[]{"__glm_sumExp", "__glm_maxRow"}, _dinfo._adaptedFrame.anyVec().makeDoubles(2, new double[]{sumExp,maxRow}));
+        Vec [] vecs = _dinfo._adaptedFrame.anyVec().makeDoubles(2, new double[]{sumExp,maxRow});
+        if(_parms._lambda_search && _parms._is_cv_model) {
+          Scope.untrack(vecs[0]._key, vecs[1]._key);
+          removeLater(vecs[0]._key,vecs[1]._key);
+        }
+        _dinfo.addResponse(new String[]{"__glm_sumExp", "__glm_maxRow"}, vecs);
       }
       double oldDevTrain = _nullDevTrain;
       double oldDevTest = _nullDevTest;
@@ -1051,7 +1121,7 @@ public class GLM extends ModelBuilder<GLMModel,GLMParameters,GLMOutput> {
         oldDevTest = testDev;
         devHistoryTrain[i % devHistoryTrain.length] = (oldDevTrain - trainDev)/oldDevTrain;
         oldDevTrain = trainDev;
-        if(_parms._lambda[i] < _lmax) {
+        if(_parms._lambda[i] < _lmax && Double.isNaN(_lambdaCVEstimate) /** if we have cv lambda estimate we should use it, can not stop before reaching it */) {
           if (_parms._early_stopping && _state._iter >= devHistoryTrain.length) {
             double s = ArrayUtils.maxValue(devHistoryTrain);
             if (s < 1e-4) {
@@ -1067,8 +1137,10 @@ public class GLM extends ModelBuilder<GLMModel,GLMParameters,GLMOutput> {
             }
           }
         }
-        if(_parms._lambda_search && (_parms._score_each_iteration || timeSinceLastScoring() > _scoringInterval))
+        if(_parms._lambda_search && (_parms._score_each_iteration || timeSinceLastScoring() > _scoringInterval)) {
+          _model._output.setSubmodelIdx(_model._output._best_lambda_idx = i);
           scoreAndUpdateModel(); // update partial results
+        }
         _job.update(_workPerIteration,"iter=" + _state._iter + " lmb=" + lambdaFormatter.format(_state.lambda()) + "deviance trn/tst= " + devFormatter.format(trainDev) + "/" + devFormatter.format(testDev) + " P=" + ArrayUtils.countNonzeros(_state.beta()));
       }
       if(_state._iter >= _parms._max_iterations)
@@ -1078,6 +1150,10 @@ public class GLM extends ModelBuilder<GLMModel,GLMParameters,GLMOutput> {
       else
         _model._output.pickBestModel();
       scoreAndUpdateModel();
+      if(_vcov != null) {
+        _model.setVcov(_vcov);
+        _model.update(_job._key);
+      }
       if(!(_parms)._lambda_search && _state._iter < _parms._max_iterations){
         _job.update(_workPerIteration*(_parms._max_iterations - _state._iter));
       }
@@ -1147,17 +1223,24 @@ public class GLM extends ModelBuilder<GLMModel,GLMParameters,GLMOutput> {
 
   private Solver defaultSolver() {
     Solver s = Solver.IRLSM;
-    if(_state.activeData().fullN() >= 5000) // cutoff has to be somewhere
+    int max_active = 0;
+    if(_parms._family == Family.multinomial )
+      for(int c = 0; c < _nclass; ++c)
+        max_active = Math.max(_state.activeDataMultinomial(c).fullN(),max_active);
+    else max_active = _state.activeData().fullN();
+    if(max_active >= 5000) // cutoff has to be somewhere
       s = Solver.L_BFGS;
-    else if(_parms._lambda_search && _parms._alpha[0] > 0) { // lambda search prefers coordinate descent
+    else if(_parms._lambda_search) { // lambda search prefers coordinate descent
       // l1 lambda search is better with coordinate descent!
       s = Solver.COORDINATE_DESCENT;
-    } else if(_state.activeBC().hasBounds()) {
+    } else if(_state.activeBC().hasBounds() && !_state.activeBC().hasProximalPenalty()) {
       s = Solver.COORDINATE_DESCENT;
     } else if(_parms._family == Family.multinomial && _parms._alpha[0] == 0)
       s = Solver.L_BFGS; // multinomial does better with lbfgs
     else
       Log.info(LogMsg("picked solver " + s));
+    if(s != Solver.L_BFGS && _parms._max_active_predictors == -1)
+      _parms._max_active_predictors = 5000;
     _parms._solver = s;
     return s;
   }
@@ -1609,7 +1692,12 @@ public class GLM extends ModelBuilder<GLMModel,GLMParameters,GLMOutput> {
         double l2pen = 0;
         for (double[] b : _betaMultinomial)
           l2pen += ArrayUtils.l2norm2(b, _dinfo._intercept);
-        return new GLMGradientInfo(gt._likelihood, gt._likelihood * _parms._obj_reg + .5 * _l2pen * l2pen, gt.gradient());
+        double [] grad = gt.gradient();
+        if(!_parms._intercept){
+          for(int i = _dinfo.fullN(); i < beta.length; i += _dinfo.fullN()+1)
+            grad[i] = 0;
+        }
+        return new GLMGradientInfo(gt._likelihood, gt._likelihood * _parms._obj_reg + .5 * _l2pen * l2pen, grad);
       } else {
         assert beta.length == _dinfo.fullN() + 1;
         assert _parms._intercept || (beta[beta.length-1] == 0);
@@ -1620,6 +1708,8 @@ public class GLM extends ModelBuilder<GLMModel,GLMParameters,GLMOutput> {
           gt = new GLMGaussianGradientTask(_job == null?null:_job._key,_dinfo,_parms,_l2pen, beta).doAll(_dinfo._adaptedFrame);
         else if(_parms._family == Family.poisson && _parms._link == Link.log)
           gt = new GLMPoissonGradientTask(_job == null?null:_job._key,_dinfo,_parms,_l2pen, beta).doAll(_dinfo._adaptedFrame);
+        else if(_parms._family == Family.quasibinomial)
+          gt = new GLMQuasiBinomialGradientTask(_job == null?null:_job._key,_dinfo,_parms,_l2pen, beta).doAll(_dinfo._adaptedFrame);
         else
           gt = new GLMGenericGradientTask(_job == null?null:_job._key, _dinfo, _parms, _l2pen, beta).doAll(_dinfo._adaptedFrame);
         double [] gradient = gt._gradient;
